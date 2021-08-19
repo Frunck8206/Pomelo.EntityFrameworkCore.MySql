@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Scaffolding;
 using Microsoft.EntityFrameworkCore.Scaffolding.Metadata;
@@ -10,7 +12,9 @@ using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
+using Pomelo.EntityFrameworkCore.MySql.Metadata.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Tests.TestUtilities.Attributes;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -215,6 +219,436 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
         public override Task Rename_table_with_primary_key()
         {
             return base.Rename_table_with_primary_key();
+        }
+
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.GeneratedColumns))]
+        public override Task Add_column_with_computedSql(bool? stored)
+            => base.Add_column_with_computedSql(stored);
+
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.GeneratedColumns))]
+        public override Task Create_table_with_computed_column(bool? stored)
+            => base.Create_table_with_computed_column(stored);
+
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.GeneratedColumns))]
+        public override Task Alter_column_change_computed()
+            => base.Alter_column_change_computed();
+
+        // We currently do not scaffold table options.
+        //
+        // [ConditionalFact]
+        // public virtual async Task Create_table_with_table_options()
+        // {
+        //     await Test(
+        //         builder => { },
+        //         builder => builder.Entity(
+        //             "IceCream", e =>
+        //             {
+        //                 e.Property<int>("IceCreamId");
+        //                 e.HasTableOption("CHECKSUM", "1");
+        //                 e.HasTableOption("MAX_ROWS", "100");
+        //             }),
+        //         model =>
+        //         {
+        //             var table = Assert.Single(model.Tables);
+        //             var options = (IDictionary<string, string>)MySqlEntityTypeExtensions.DeserializeTableOptions(
+        //                 table.FindAnnotation(MySqlAnnotationNames.StoreOptions)?.Value as string);
+        //
+        //             Assert.Contains("CHECKSUM", options);
+        //             Assert.Equal("1", options["CHECKSUM"]);
+        //
+        //             Assert.Contains("MAX_ROWS", options);
+        //             Assert.Equal("100", options["MAX_ROWS"]);
+        //         });
+        //
+        //     AssertSql(@"");
+        // }
+
+        [ConditionalFact]
+        public virtual async Task Add_columns_with_collations()
+        {
+            await Test(
+                common => common
+                    .UseCollation(DefaultCollation)
+                    .Entity(
+                        "IceCream",
+                        e => e.Property<int>("IceCreamId")),
+                source => { },
+                target => target.Entity(
+                    "IceCream", e =>
+                    {
+                        e.Property<string>("Name");
+                        e.Property<string>("Brand")
+                            .UseCollation(NonDefaultCollation);
+                    }),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var nameColumn = Assert.Single(table.Columns.Where(c => c.Name == "Name"));
+                    var brandColumn = Assert.Single(table.Columns.Where(c => c.Name == "Brand"));
+
+                    Assert.Null(nameColumn.Collation);
+                    Assert.Equal(NonDefaultCollation, brandColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER TABLE `IceCream` ADD `Brand` longtext COLLATE {NonDefaultCollation} NULL;",
+                //
+                $@"ALTER TABLE `IceCream` ADD `Name` longtext COLLATE {DefaultCollation} NULL;");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Add_guid_columns()
+        {
+            await Test(
+                common => { },
+                source => { },
+                target => target
+                    .UseCollation(DefaultCollation)
+                    .Entity(
+                        "IceCream",
+                        e => e.Property<Guid>("IceCreamId")),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var iceCreamIdColumn = Assert.Single(table.Columns.Where(c => c.Name == "IceCreamId"));
+
+                    Assert.Equal("ascii_general_ci", iceCreamIdColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER DATABASE COLLATE {DefaultCollation};",
+                //
+                $@"CREATE TABLE `IceCream` (
+    `IceCreamId` char(36) COLLATE ascii_general_ci NOT NULL
+) COLLATE={DefaultCollation};");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Add_guid_columns_with_collation()
+        {
+            await Test(
+                common => { },
+                source => { },
+                target => target
+                    .UseCollation(DefaultCollation)
+                    .Entity(
+                        "IceCream",
+                        e => e.Property<Guid>("IceCreamId")
+                            .UseCollation(NonDefaultCollation)),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var iceCreamIdColumn = Assert.Single(table.Columns.Where(c => c.Name == "IceCreamId"));
+
+                    Assert.Equal(NonDefaultCollation, iceCreamIdColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER DATABASE COLLATE {DefaultCollation};",
+                //
+                $@"CREATE TABLE `IceCream` (
+    `IceCreamId` char(36) COLLATE {NonDefaultCollation} NOT NULL
+) COLLATE={DefaultCollation};");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Add_guid_columns_with_explicit_default_collation()
+        {
+            await Test(
+                common => { },
+                source => { },
+                target => target
+                    .UseCollation(DefaultCollation)
+                    .UseGuidCollation(NonDefaultCollation)
+                    .Entity(
+                        "IceCream",
+                        e => e.Property<Guid>("IceCreamId")),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var iceCreamIdColumn = Assert.Single(table.Columns.Where(c => c.Name == "IceCreamId"));
+
+                    Assert.Equal(NonDefaultCollation, iceCreamIdColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER DATABASE COLLATE {DefaultCollation};",
+                //
+                $@"CREATE TABLE `IceCream` (
+    `IceCreamId` char(36) COLLATE {NonDefaultCollation} NOT NULL
+) COLLATE={DefaultCollation};");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Add_guid_columns_with_disabled_default_collation()
+        {
+            await Test(
+                common => { },
+                source => { },
+                target => target
+                    .UseCollation(DefaultCollation)
+                    .UseGuidCollation(string.Empty)
+                    .Entity(
+                        "IceCream",
+                        e => e.Property<Guid>("IceCreamId")),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var iceCreamIdColumn = Assert.Single(table.Columns.Where(c => c.Name == "IceCreamId"));
+
+                    Assert.Null(iceCreamIdColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER DATABASE COLLATE {DefaultCollation};",
+                //
+                $@"CREATE TABLE `IceCream` (
+    `IceCreamId` char(36) NOT NULL
+) COLLATE={DefaultCollation};");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Alter_column_collations_with_delegation()
+        {
+            await Test(
+                common => common
+                    .UseCollation(DefaultCollation)
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.Property<int>("IceCreamId");
+                            e.Property<string>("Name");
+                            e.Property<string>("Brand");
+                        }),
+                source => source.Entity(
+                    "IceCream", e =>
+                    {
+                        e.Property<string>("Brand")
+                            .UseCollation(NonDefaultCollation);
+                    }),
+                target => target.Entity(
+                    "IceCream", e =>
+                    {
+                        e.Property<string>("Name")
+                            .UseCollation(NonDefaultCollation);
+                    }),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var nameColumn = Assert.Single(table.Columns.Where(c => c.Name == "Name"));
+                    var brandColumn = Assert.Single(table.Columns.Where(c => c.Name == "Brand"));
+
+                    Assert.Equal(NonDefaultCollation, nameColumn.Collation);
+                    Assert.Null(brandColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Name` longtext COLLATE {NonDefaultCollation} NULL;",
+                //
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Brand` longtext COLLATE {DefaultCollation} NULL;");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Alter_column_collations_with_delegation2()
+        {
+            await Test(
+                common => common
+                    .UseCollation(DefaultCollation)
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.Property<int>("IceCreamId");
+                            e.Property<string>("Name");
+                            e.Property<string>("Brand");
+                        }),
+                source => source.Entity(
+                    "IceCream", e =>
+                    {
+                        e.Property<string>("Brand")
+                            .UseCollation(NonDefaultCollation);
+                    }),
+                target => target.Entity(
+                    "IceCream", e =>
+                    {
+                        e.UseCollation(NonDefaultCollation2);
+                        e.Property<string>("Name")
+                            .UseCollation(NonDefaultCollation);
+                    }),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var nameColumn = Assert.Single(table.Columns.Where(c => c.Name == "Name"));
+                    var brandColumn = Assert.Single(table.Columns.Where(c => c.Name == "Brand"));
+
+                    Assert.Equal(NonDefaultCollation, nameColumn.Collation);
+                    Assert.Null(brandColumn.Collation);
+                });
+
+            AssertSql(
+                $"ALTER TABLE `IceCream` COLLATE={NonDefaultCollation2};",
+                //
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Name` longtext COLLATE {NonDefaultCollation} NULL;",
+                //
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Brand` longtext COLLATE {NonDefaultCollation2} NULL;");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Alter_column_collations_with_delegation_columns_only()
+        {
+            await Test(
+                common => common
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.Property<int>("IceCreamId");
+                            e.Property<string>("Name");
+                            e.Property<string>("Brand");
+                        }),
+                source => source
+                    .UseCollation(DefaultCollation, DelegationModes.ApplyToColumns)
+                    .Entity(
+                        "IceCream", e =>
+                        {
+                            e.Property<string>("Brand")
+                                .UseCollation(NonDefaultCollation);
+                        }),
+                target => target
+                    .UseCollation(NonDefaultCollation2, DelegationModes.ApplyToColumns)
+                    .Entity(
+                        "IceCream", e =>
+                        {
+                            e.Property<string>("Name")
+                                .UseCollation(NonDefaultCollation);
+                        }),
+                result => { });
+
+            AssertSql(
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Name` longtext COLLATE {NonDefaultCollation} NULL;",
+                //
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Brand` longtext COLLATE {NonDefaultCollation2} NULL;");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Alter_column_collations_with_delegation_columns_only_with_inbetween_tableonly_collation()
+        {
+            await Test(
+                common => common
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.Property<int>("IceCreamId");
+                            e.Property<string>("Name");
+                            e.Property<string>("Brand");
+                        }),
+                source => source
+                    .UseCollation(DefaultCollation, DelegationModes.ApplyToColumns)
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.Property<string>("Brand")
+                                .UseCollation(NonDefaultCollation);
+                        }),
+                target => target
+                    .UseCollation(NonDefaultCollation2, DelegationModes.ApplyToColumns)
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.UseCollation(DefaultCollation, DelegationModes.ApplyToTables);
+                            e.Property<string>("Name")
+                                .UseCollation(NonDefaultCollation);
+                        }),
+                result => { });
+
+            AssertSql(
+                $@"ALTER TABLE `IceCream` COLLATE={DefaultCollation};",
+                //
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Name` longtext COLLATE {NonDefaultCollation} NULL;",
+                //
+                $@"ALTER TABLE `IceCream` MODIFY COLUMN `Brand` longtext COLLATE {NonDefaultCollation2} NULL;");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Create_table_explicit_column_charset_takes_precedence_over_inherited_collation()
+        {
+            await Test(
+                common => { },
+                source => { },
+                target => target
+                    .UseCollation(DefaultCollation)
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.Property<int>("IceCreamId");
+                            e.Property<string>("Name");
+                            e.Property<string>("Brand")
+                                .HasCharSet(NonDefaultCharSet);
+                        }),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var nameColumn = Assert.Single(table.Columns.Where(c => c.Name == "Name"));
+                    var brandColumn = Assert.Single(table.Columns.Where(c => c.Name == "Brand"));
+
+                    Assert.Null(nameColumn[MySqlAnnotationNames.CharSet]);
+                    Assert.Null(nameColumn.Collation);
+                    Assert.Equal(NonDefaultCharSet, brandColumn[MySqlAnnotationNames.CharSet]);
+                    Assert.NotEqual(DefaultCollation, brandColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER DATABASE COLLATE {DefaultCollation};",
+                //
+                $@"CREATE TABLE `IceCream` (
+    `Brand` longtext CHARACTER SET {NonDefaultCharSet} NULL,
+    `IceCreamId` int NOT NULL,
+    `Name` longtext COLLATE {DefaultCollation} NULL
+) COLLATE={DefaultCollation};");
+        }
+
+        [ConditionalFact]
+        public virtual async Task Create_table_explicit_column_collation_takes_precedence_over_inherited_charset()
+        {
+            await Test(
+                common => { },
+                source => { },
+                target => target
+                    .HasCharSet(NonDefaultCharSet)
+                    .Entity(
+                        "IceCream",
+                        e =>
+                        {
+                            e.Property<int>("IceCreamId");
+                            e.Property<string>("Name");
+                            e.Property<string>("Brand")
+                                .UseCollation(NonDefaultCollation2);
+                        }),
+                result =>
+                {
+                    var table = Assert.Single(result.Tables);
+                    var nameColumn = Assert.Single(table.Columns.Where(c => c.Name == "Name"));
+                    var brandColumn = Assert.Single(table.Columns.Where(c => c.Name == "Brand"));
+
+                    Assert.Null(nameColumn[MySqlAnnotationNames.CharSet]);
+                    Assert.Null(nameColumn.Collation);
+                    Assert.NotEqual(NonDefaultCharSet, brandColumn[MySqlAnnotationNames.CharSet]);
+                    Assert.Equal(NonDefaultCollation2, brandColumn.Collation);
+                });
+
+            AssertSql(
+                $@"ALTER DATABASE CHARACTER SET {NonDefaultCharSet};",
+                //
+                $@"CREATE TABLE `IceCream` (
+    `Brand` longtext COLLATE {NonDefaultCollation2} NULL,
+    `IceCreamId` int NOT NULL,
+    `Name` longtext CHARACTER SET {NonDefaultCharSet} NULL
+) CHARACTER SET={NonDefaultCharSet};");
         }
 
         [ConditionalFact]
@@ -541,7 +975,20 @@ ALTER TABLE `Foo` DROP PRIMARY KEY;",
                 @"ALTER TABLE `Foo` ADD CONSTRAINT `FK_Foo_Bar_BarFK` FOREIGN KEY (`BarFK`) REFERENCES `Bar` (`BarPK`) ON DELETE RESTRICT;");
         }
 
-        protected override string NonDefaultCollation => ((MySqlTestStore)Fixture.TestStore).GetCaseSensitiveUtf8Mb4Collation();
+        protected virtual string DefaultCollation => ((MySqlTestStore)Fixture.TestStore).DatabaseCollation;
+
+        protected override string NonDefaultCollation
+            => DefaultCollation == ((MySqlTestStore)Fixture.TestStore).GetCaseSensitiveUtf8Mb4Collation()
+                ? ((MySqlTestStore)Fixture.TestStore).GetCaseInsensitiveUtf8Mb4Collation()
+                : ((MySqlTestStore)Fixture.TestStore).GetCaseSensitiveUtf8Mb4Collation();
+
+        protected virtual string NonDefaultCollation2
+            => "utf8mb4_german2_ci";
+
+        protected virtual string DefaultCharSet => ((MySqlTestStore)Fixture.TestStore).DatabaseCharSet;
+        protected virtual string NonDefaultCharSet => "latin1";
+
+        protected virtual TestHelpers TestHelpers => MySqlTestHelpers.Instance;
 
         protected virtual Task Test(
             Action<ModelBuilder> buildCommonAction,
@@ -550,16 +997,20 @@ ALTER TABLE `Foo` DROP PRIMARY KEY;",
             Action<MigrationBuilder> migrationBuilderAction,
             Action<DatabaseModel> asserter)
         {
+            var services = TestHelpers.CreateContextServices();
+
             // Build the source and target models. Add current/latest product version if one wasn't set.
             var sourceModelBuilder = CreateConventionlessModelBuilder();
             buildCommonAction(sourceModelBuilder);
             buildSourceAction(sourceModelBuilder);
-            var sourceModel = sourceModelBuilder.FinalizeModel();
+            var sourceModel = services.GetRequiredService<IModelRuntimeInitializer>()
+                .Initialize(sourceModelBuilder.FinalizeModel(), designTime: true, validationLogger: null);
 
             var targetModelBuilder = CreateConventionlessModelBuilder();
             buildCommonAction(targetModelBuilder);
             buildTargetAction(targetModelBuilder);
-            var targetModel = targetModelBuilder.FinalizeModel();
+            var targetModel = services.GetRequiredService<IModelRuntimeInitializer>()
+                .Initialize(targetModelBuilder.FinalizeModel(), designTime: true, validationLogger: null);
 
             var migrationBuilder = new MigrationBuilder(null);
             migrationBuilderAction(migrationBuilder);
@@ -576,14 +1027,6 @@ ALTER TABLE `Foo` DROP PRIMARY KEY;",
             protected override IServiceCollection AddServices(IServiceCollection serviceCollection)
                 => base.AddServices(serviceCollection)
                     .AddScoped<IDatabaseModelFactory, MySqlDatabaseModelFactory>();
-
-            public override DbContextOptionsBuilder AddOptions(DbContextOptionsBuilder builder)
-            {
-                new MySqlDbContextOptionsBuilder(base.AddOptions(builder))
-                    .CharSetBehavior(CharSetBehavior.NeverAppend);
-
-                return builder;
-            }
         }
     }
 }

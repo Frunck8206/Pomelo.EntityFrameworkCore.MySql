@@ -1,9 +1,8 @@
 using System;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
-using Pomelo.EntityFrameworkCore.MySql.Storage;
 using Pomelo.EntityFrameworkCore.MySql.Tests.TestUtilities.Attributes;
 using Xunit;
 
@@ -25,10 +24,10 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 
             Assert.Equal(
                 @"CREATE TABLE IF NOT EXISTS `__EFMigrationsHistory` (
-    `MigrationId` varchar(95) NOT NULL,
-    `ProductVersion` varchar(32) NOT NULL,
+    `MigrationId` varchar(150) CHARACTER SET utf8mb4 NOT NULL,
+    `ProductVersion` varchar(32) CHARACTER SET utf8mb4 NOT NULL,
     CONSTRAINT `PK___EFMigrationsHistory` PRIMARY KEY (`MigrationId`)
-);
+) CHARACTER SET=utf8mb4;
 
 ",
                 Sql,
@@ -41,10 +40,10 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 
             Assert.Equal(
                 @"CREATE TABLE IF NOT EXISTS `__EFMigrationsHistory` (
-    `MigrationId` varchar(95) NOT NULL,
-    `ProductVersion` varchar(32) NOT NULL,
+    `MigrationId` varchar(150) CHARACTER SET utf8mb4 NOT NULL,
+    `ProductVersion` varchar(32) CHARACTER SET utf8mb4 NOT NULL,
     CONSTRAINT `PK___EFMigrationsHistory` PRIMARY KEY (`MigrationId`)
-);
+) CHARACTER SET=utf8mb4;
 
 ",
                 Sql,
@@ -57,10 +56,10 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 
             Assert.Equal(
                 @"CREATE TABLE IF NOT EXISTS `__EFMigrationsHistory` (
-    `MigrationId` varchar(95) NOT NULL,
-    `ProductVersion` varchar(32) NOT NULL,
+    `MigrationId` varchar(150) CHARACTER SET utf8mb4 NOT NULL,
+    `ProductVersion` varchar(32) CHARACTER SET utf8mb4 NOT NULL,
     CONSTRAINT `PK___EFMigrationsHistory` PRIMARY KEY (`MigrationId`)
-);
+) CHARACTER SET=utf8mb4;
 
 START TRANSACTION;
 
@@ -139,10 +138,10 @@ COMMIT;
             base.Can_generate_idempotent_up_scripts();
 
             Assert.Equal(@"CREATE TABLE IF NOT EXISTS `__EFMigrationsHistory` (
-    `MigrationId` varchar(95) NOT NULL,
-    `ProductVersion` varchar(32) NOT NULL,
+    `MigrationId` varchar(150) CHARACTER SET utf8mb4 NOT NULL,
+    `ProductVersion` varchar(32) CHARACTER SET utf8mb4 NOT NULL,
     CONSTRAINT `PK___EFMigrationsHistory` PRIMARY KEY (`MigrationId`)
-);
+) CHARACTER SET=utf8mb4;
 
 START TRANSACTION;
 
@@ -402,10 +401,10 @@ COMMIT;
 
             Assert.Equal(
                 @"CREATE TABLE IF NOT EXISTS `__EFMigrationsHistory` (
-    `MigrationId` varchar(95) NOT NULL,
-    `ProductVersion` varchar(32) NOT NULL,
+    `MigrationId` varchar(150) CHARACTER SET utf8mb4 NOT NULL,
+    `ProductVersion` varchar(32) CHARACTER SET utf8mb4 NOT NULL,
     CONSTRAINT `PK___EFMigrationsHistory` PRIMARY KEY (`MigrationId`)
-);
+) CHARACTER SET=utf8mb4;
 
 CREATE TABLE `Table1` (
     `Id` int NOT NULL,
@@ -435,10 +434,10 @@ VALUES ('00000000000003_Migration3', '7.0.0-test');
 
             Assert.Equal(
                 @"CREATE TABLE IF NOT EXISTS `__EFMigrationsHistory` (
-    `MigrationId` varchar(95) NOT NULL,
-    `ProductVersion` varchar(32) NOT NULL,
+    `MigrationId` varchar(150) CHARACTER SET utf8mb4 NOT NULL,
+    `ProductVersion` varchar(32) CHARACTER SET utf8mb4 NOT NULL,
     CONSTRAINT `PK___EFMigrationsHistory` PRIMARY KEY (`MigrationId`)
-);
+) CHARACTER SET=utf8mb4;
 
 
 DROP PROCEDURE IF EXISTS MigrationsScript;

@@ -5,10 +5,15 @@ using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Reflection;
 using JetBrains.Annotations;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
-using Microsoft.EntityFrameworkCore.Utilities;
+using Microsoft.EntityFrameworkCore.Storage;
+using Pomelo.EntityFrameworkCore.MySql.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Query.Expressions.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Query.Internal;
@@ -20,6 +25,12 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
     {
         private readonly IMySqlJsonPocoTranslator _jsonPocoTranslator;
         private readonly MySqlSqlExpressionFactory _sqlExpressionFactory;
+
+        protected static readonly MethodInfo[] NewArrayExpressionSupportMethodInfos = Array.Empty<MethodInfo>()
+            .Concat(typeof(MySqlDbFunctionsExtensions).GetRuntimeMethods().Where(m => m.Name == nameof(MySqlDbFunctionsExtensions.Match)))
+            .Concat(typeof(string).GetRuntimeMethods().Where(m => m.Name == nameof(string.Concat)))
+            .Where(m => m.GetParameters().Any(p => p.ParameterType.IsArray))
+            .ToArray();
 
         public MySqlSqlTranslatingExpressionVisitor(
             RelationalSqlTranslatingExpressionVisitorDependencies dependencies,
@@ -39,11 +50,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             {
                 if (TranslationFailed(unaryExpression.Operand, Visit(unaryExpression.Operand), out var sqlOperand))
                 {
-                    return null;
+                    return QueryCompilationContext.NotTranslatedExpression;
                 }
 
                 if (sqlOperand.Type == typeof(byte[]) &&
-                    (sqlOperand.TypeMapping == null || sqlOperand.TypeMapping is MySqlByteArrayTypeMapping))
+                    (sqlOperand.TypeMapping is null or MySqlByteArrayTypeMapping))
                 {
                     return _sqlExpressionFactory.NullableFunction(
                         "LENGTH",
@@ -51,9 +62,9 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
                         typeof(int));
                 }
 
-                return _jsonPocoTranslator?.TranslateArrayLength(sqlOperand);
+                return _jsonPocoTranslator?.TranslateArrayLength(sqlOperand) ??
+                       QueryCompilationContext.NotTranslatedExpression;
             }
-
 
             // Make explicit casts implicit if they are applied to a JSON traversal object.
             // It is pretty common for Newtonsoft.Json objects to be cast to other types (e.g. casting from
@@ -76,17 +87,13 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             }
 
             var visitedExpression = base.VisitUnary(unaryExpression);
-            if (visitedExpression == null)
-            {
-                return null;
-            }
 
-            // MySQL implicitly casts numbers used in BITWISE NOT operations (~ operator) to BIGINT UNSIGNED.
-            // We need to cast them back, to get the expected result.
             if (visitedExpression is SqlUnaryExpression sqlUnaryExpression &&
                 sqlUnaryExpression.OperatorType == ExpressionType.Not &&
                 sqlUnaryExpression.Type != typeof(bool))
             {
+                // MySQL implicitly casts numbers used in BITWISE NOT operations (~ operator) to BIGINT UNSIGNED.
+                // We need to cast them back, to get the expected result.
                 return _sqlExpressionFactory.Convert(
                     sqlUnaryExpression,
                     sqlUnaryExpression.Type,
@@ -103,7 +110,34 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
                 if (TranslationFailed(binaryExpression.Left, Visit(TryRemoveImplicitConvert(binaryExpression.Left)), out var sqlLeft)
                     || TranslationFailed(binaryExpression.Right, Visit(TryRemoveImplicitConvert(binaryExpression.Right)), out var sqlRight))
                 {
-                    return null;
+                    return QueryCompilationContext.NotTranslatedExpression;
+                }
+
+                if (binaryExpression.Left.Type == typeof(byte[]))
+                {
+                    var left = Visit(binaryExpression.Left);
+                    var right = Visit(binaryExpression.Right);
+
+                    if (left is SqlExpression leftSql &&
+                        right is SqlExpression rightSql)
+                    {
+                        return _sqlExpressionFactory.NullableFunction(
+                            "ASCII",
+                            new[]
+                            {
+                                _sqlExpressionFactory.NullableFunction(
+                                    "SUBSTRING",
+                                    new[]
+                                    {
+                                        leftSql, Dependencies.SqlExpressionFactory.Add(
+                                            Dependencies.SqlExpressionFactory.ApplyDefaultTypeMapping(rightSql),
+                                            Dependencies.SqlExpressionFactory.Constant(1)),
+                                        Dependencies.SqlExpressionFactory.Constant(1)
+                                    },
+                                    typeof(byte[]))
+                            },
+                            typeof(byte));
+                    }
                 }
 
                 // Try translating ArrayIndex inside json column
@@ -112,22 +146,17 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
                     _sqlExpressionFactory.JsonArrayIndex(sqlRight),
                     binaryExpression.Type);
 
-                if (expression != null)
+                if (expression is not null)
                 {
                     return expression;
                 }
             }
 
-            var visitedExpression = (SqlExpression)base.VisitBinary(binaryExpression);
-            if (visitedExpression == null)
-            {
-                return null;
-            }
+            var visitedExpression = base.VisitBinary(binaryExpression);
 
             if (visitedExpression is SqlBinaryExpression visitedBinaryExpression)
             {
-                // Returning null forces client projection.
-                // CHECK: Is this still true in .NET Core 3.0?
+                // TODO: Is this still true in .NET Core 3.0?
                 switch (visitedBinaryExpression.OperatorType)
                 {
                     case ExpressionType.Add:
@@ -136,7 +165,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
                     case ExpressionType.Divide:
                     case ExpressionType.Modulo:
                         return IsDateTimeBasedOperation(visitedBinaryExpression)
-                            ? null
+                            ? QueryCompilationContext.NotTranslatedExpression
                             : visitedBinaryExpression;
                 }
             }
@@ -144,23 +173,90 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             return visitedExpression;
         }
 
-        protected override Expression VisitNewArray(NewArrayExpression newArrayExpression)
+        protected virtual Expression VisitMethodCallNewArray(NewArrayExpression newArrayExpression)
         {
-            // Needed for MySqlDbFunctionsExtensions.Match().
-            // Could be made more specific in the future, if needed.
-            return newArrayExpression.Type == typeof(string[])
-                ? _sqlExpressionFactory.ComplexFunctionArgument(
+            // Needed for MySqlDbFunctionsExtensions.Match() and String.Concat() translation.
+            if (newArrayExpression.Type == typeof(string[]))
+            {
+                return _sqlExpressionFactory.ComplexFunctionArgument(
                     newArrayExpression.Expressions.Select(e => (SqlExpression)Visit(e))
                         .ToArray(),
                     ", ",
-                    typeof(string))
-                : base.VisitNewArray(newArrayExpression);
+                    typeof(string[]));
+            }
+
+            // Needed for String.Concat() translation.
+            if (newArrayExpression.Type == typeof(object[]))
+            {
+                var typeMapping = ((MySqlStringTypeMapping)Dependencies.TypeMappingSource.GetMapping(typeof(string))).Clone(forceToString: true);
+                return _sqlExpressionFactory.ComplexFunctionArgument(
+                    newArrayExpression.Expressions.Select(e => Dependencies.SqlExpressionFactory.ApplyTypeMapping((SqlExpression)Visit(e), typeMapping))
+                        .ToArray(),
+                    ", ",
+                    typeof(object[]),
+                    typeMapping);
+            }
+
+            return base.VisitNewArray(newArrayExpression);
+        }
+
+        protected override Expression VisitMethodCall(MethodCallExpression methodCallExpression)
+        {
+            if (NewArrayExpressionSupportMethodInfos.Contains(methodCallExpression.Method))
+            {
+                var arguments = new Expression[methodCallExpression.Arguments.Count];
+                for (var i = 0; i < arguments.Length; i++)
+                {
+                    var argument = methodCallExpression.Arguments[i];
+
+                    if (argument is NewArrayExpression newArrayExpression)
+                    {
+                        if (TranslationFailed(argument, VisitMethodCallNewArray(newArrayExpression), out var sqlExpression))
+                        {
+                            return QueryCompilationContext.NotTranslatedExpression;
+                        }
+
+                        arguments[i] = sqlExpression;
+                    }
+                    else
+                    {
+                        arguments[i] = argument;
+                    }
+                }
+
+                methodCallExpression = methodCallExpression.Update(methodCallExpression.Object, arguments);
+            }
+
+            var result = base.VisitMethodCall(methodCallExpression);
+            if (result == QueryCompilationContext.NotTranslatedExpression &&
+                MySqlStringComparisonMethodTranslator.StringComparisonMethodInfos.Any(m => m == methodCallExpression.Method))
+            {
+                var message = MySqlStrings.QueryUnableToTranslateMethodWithStringComparison(
+                    methodCallExpression.Method.DeclaringType.Name,
+                    methodCallExpression.Method.Name,
+                    nameof(MySqlDbContextOptionsBuilder.EnableStringComparisonTranslations));
+
+                // EF Core returns an error message on its own, when the string.Equals() methods (static and non-static) are being used with
+                // a `StringComparison` parameter.
+                // Since we also support other translations, but all of them only when opted in, we will replace the EF Core error message
+                // with our own, that is more appropriate for our case.
+                if (TranslationErrorDetails.Contains(CoreStrings.QueryUnableToTranslateStringEqualsWithStringComparison))
+                {
+                    var translationErrorDetails = TranslationErrorDetails;
+                    ResetTranslationErrorDetails();
+                    message = translationErrorDetails.Replace(CoreStrings.QueryUnableToTranslateStringEqualsWithStringComparison, message);
+                }
+
+                AddTranslationErrorDetails(message);
+            }
+
+            return result;
         }
 
         private static bool IsDateTimeBasedOperation(SqlBinaryExpression binaryExpression)
         {
-            if (binaryExpression.TypeMapping != null
-                && (binaryExpression.TypeMapping.StoreType.StartsWith("date") || binaryExpression.TypeMapping.StoreType.StartsWith("time")))
+            if (binaryExpression.TypeMapping is RelationalTypeMapping typeMapping &&
+                (typeMapping.StoreType.StartsWith("date") || typeMapping.StoreType.StartsWith("time")))
             {
                 return true;
             }
@@ -214,7 +310,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
         [DebuggerStepThrough]
         private bool TranslationFailed(Expression original, Expression translation, out SqlExpression castTranslation)
         {
-            if (original != null && !(translation is SqlExpression))
+            if (original != null && translation is not SqlExpression)
             {
                 castTranslation = null;
                 return true;

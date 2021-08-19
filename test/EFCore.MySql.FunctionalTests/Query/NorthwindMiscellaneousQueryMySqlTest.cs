@@ -1,12 +1,13 @@
-﻿using System.Linq;
+﻿using System;
+using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.TestModels.Northwind;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using MySqlConnector;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
-using Pomelo.EntityFrameworkCore.MySql.Storage;
+using Pomelo.EntityFrameworkCore.MySql.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Tests.TestUtilities.Attributes;
 using Xunit;
 using Xunit.Abstractions;
@@ -28,9 +29,9 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.Query
         protected override bool CanExecuteQueryString
             => true;
 
-        public override void Select_bitwise_or()
+        public override async Task Select_bitwise_or(bool async)
         {
-            base.Select_bitwise_or();
+            await base.Select_bitwise_or(async);
 
             AssertSql(
                 @"SELECT `c`.`CustomerID`, (`c`.`CustomerID` = 'ALFKI') | (`c`.`CustomerID` = 'ANATR') AS `Value`
@@ -38,9 +39,9 @@ FROM `Customers` AS `c`
 ORDER BY `c`.`CustomerID`");
         }
 
-        public override void Select_bitwise_or_multiple()
+        public override async Task Select_bitwise_or_multiple(bool async)
         {
-            base.Select_bitwise_or_multiple();
+            await base.Select_bitwise_or_multiple(async);
 
             AssertSql(
                 @"SELECT `c`.`CustomerID`, ((`c`.`CustomerID` = 'ALFKI') | (`c`.`CustomerID` = 'ANATR')) | (`c`.`CustomerID` = 'ANTON') AS `Value`
@@ -48,9 +49,9 @@ FROM `Customers` AS `c`
 ORDER BY `c`.`CustomerID`");
         }
 
-        public override void Select_bitwise_and()
+        public override async Task Select_bitwise_and(bool async)
         {
-            base.Select_bitwise_and();
+            await base.Select_bitwise_and(async);
 
             AssertSql(
                 @"SELECT `c`.`CustomerID`, (`c`.`CustomerID` = 'ALFKI') & (`c`.`CustomerID` = 'ANATR') AS `Value`
@@ -58,9 +59,9 @@ FROM `Customers` AS `c`
 ORDER BY `c`.`CustomerID`");
         }
 
-        public override void Select_bitwise_and_or()
+        public override async Task Select_bitwise_and_or(bool async)
         {
-            base.Select_bitwise_and_or();
+            await base.Select_bitwise_and_or(async);
 
             AssertSql(
                 @"SELECT `c`.`CustomerID`, ((`c`.`CustomerID` = 'ALFKI') & (`c`.`CustomerID` = 'ANATR')) | (`c`.`CustomerID` = 'ANTON') AS `Value`
@@ -140,9 +141,9 @@ FROM `Orders` AS `o`
 WHERE (`o`.`OrderID` | 10248) = 10248");
         }
 
-        public override void Select_bitwise_or_with_logical_or()
+        public override async Task Select_bitwise_or_with_logical_or(bool async)
         {
-            base.Select_bitwise_or_with_logical_or();
+            await base.Select_bitwise_or_with_logical_or(async);
 
             AssertSql(
                 @"SELECT `c`.`CustomerID`, ((`c`.`CustomerID` = 'ALFKI') | (`c`.`CustomerID` = 'ANATR')) OR (`c`.`CustomerID` = 'ANTON') AS `Value`
@@ -150,9 +151,9 @@ FROM `Customers` AS `c`
 ORDER BY `c`.`CustomerID`");
         }
 
-        public override void Select_bitwise_and_with_logical_and()
+        public override async Task Select_bitwise_and_with_logical_and(bool async)
         {
-            base.Select_bitwise_and_with_logical_and();
+            await base.Select_bitwise_and_with_logical_and(async);
 
             AssertSql(
                 @"SELECT `c`.`CustomerID`, ((`c`.`CustomerID` = 'ALFKI') & (`c`.`CustomerID` = 'ANATR')) AND (`c`.`CustomerID` = 'ANTON') AS `Value`
@@ -202,6 +203,24 @@ WHERE `o`.`OrderDate` IS NOT NULL AND (EXTRACT(year FROM `o`.`OrderDate`) < @__n
                 ss => ss.Set<Customer>().OrderBy(c => c.Orders.FirstOrDefault() == null ? (int?)null : c.Orders.OrderBy(o => o.OrderID).FirstOrDefault().OrderID).ThenBy(c => c.CustomerID),
                 entryCount: 91,
                 assertOrder: true);
+        }
+
+        public override Task Using_string_Equals_with_StringComparison_throws_informative_error(bool async)
+        {
+            return AssertTranslationFailedWithDetails(
+                () => AssertQuery(
+                    async,
+                    ss => ss.Set<Customer>().Where(c => c.CustomerID.Equals("ALFKI", StringComparison.InvariantCulture))),
+                MySqlStrings.QueryUnableToTranslateMethodWithStringComparison(nameof(String), nameof(string.Equals), nameof(MySqlDbContextOptionsBuilder.EnableStringComparisonTranslations)));
+        }
+
+        public override Task Using_static_string_Equals_with_StringComparison_throws_informative_error(bool async)
+        {
+            return AssertTranslationFailedWithDetails(
+                () => AssertQuery(
+                    async,
+                    ss => ss.Set<Customer>().Where(c => string.Equals(c.CustomerID, "ALFKI", StringComparison.InvariantCulture))),
+                MySqlStrings.QueryUnableToTranslateMethodWithStringComparison(nameof(String), nameof(string.Equals), nameof(MySqlDbContextOptionsBuilder.EnableStringComparisonTranslations)));
         }
 
         [SupportedServerVersionCondition(nameof(ServerVersionSupport.WindowFunctions))]
@@ -271,21 +290,23 @@ WHERE `o`.`OrderDate` IS NOT NULL AND (EXTRACT(year FROM `o`.`OrderDate`) < @__n
             return base.Select_subquery_recursive_trivial(async);
         }
 
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.OuterApply))]
+        public override Task Correlated_collection_with_distinct_without_default_identifiers_projecting_columns(bool async)
+        {
+            return base.Correlated_collection_with_distinct_without_default_identifiers_projecting_columns(async);
+        }
+
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.OuterApply))]
+        public override Task Correlated_collection_with_distinct_without_default_identifiers_projecting_columns_with_navigation(bool async)
+        {
+            return base.Correlated_collection_with_distinct_without_default_identifiers_projecting_columns_with_navigation(async);
+        }
+
         [SupportedServerVersionCondition(nameof(ServerVersionSupport.CrossApply))]
         public override Task SelectMany_correlated_subquery_hard(bool async)
         {
             return base.SelectMany_correlated_subquery_hard(async);
         }
-
-        // TODO: EF Core 5
-        [ConditionalTheory(Skip = "https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql/issues/996")]
-        public override Task Using_string_Equals_with_StringComparison_throws_informative_error(bool async)
-            => base.Using_string_Equals_with_StringComparison_throws_informative_error(async);
-
-        // TODO: EF Core 5
-        [ConditionalTheory(Skip = "https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql/issues/996")]
-        public override Task Using_static_string_Equals_with_StringComparison_throws_informative_error(bool async)
-            => base.Using_static_string_Equals_with_StringComparison_throws_informative_error(async);
 
         [SupportedServerVersionCondition(nameof(ServerVersionSupport.OuterReferenceInMultiLevelSubquery))]
         public override Task DefaultIfEmpty_Sum_over_collection_navigation(bool async)

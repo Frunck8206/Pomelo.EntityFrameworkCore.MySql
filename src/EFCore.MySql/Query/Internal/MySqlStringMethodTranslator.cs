@@ -10,12 +10,18 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using Microsoft.EntityFrameworkCore.Storage;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Query.Expressions.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Storage.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
 {
     public class MySqlStringMethodTranslator : IMethodCallTranslator
     {
+        private readonly IRelationalTypeMappingSource _typeMappingSource;
+        private readonly IMySqlOptions _options;
+
         private static readonly MethodInfo _indexOfMethodInfo
             = typeof(string).GetRuntimeMethod(nameof(string.IndexOf), new[] { typeof(string) });
         private static readonly MethodInfo _replaceMethodInfo
@@ -24,7 +30,9 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
             = typeof(string).GetRuntimeMethod(nameof(string.ToLower), Array.Empty<Type>());
         private static readonly MethodInfo _toUpperMethodInfo
             = typeof(string).GetRuntimeMethod(nameof(string.ToUpper), Array.Empty<Type>());
-        private static readonly MethodInfo _substringMethodInfo
+        private static readonly MethodInfo _substringMethodInfoWithOneArg
+            = typeof(string).GetRuntimeMethod(nameof(string.Substring), new[] { typeof(int) });
+        private static readonly MethodInfo _substringMethodInfoWithTwoArgs
             = typeof(string).GetRuntimeMethod(nameof(string.Substring), new[] { typeof(int), typeof(int) });
         private static readonly MethodInfo _isNullOrWhiteSpaceMethodInfo
             = typeof(string).GetRuntimeMethod(nameof(string.IsNullOrWhiteSpace), new[] { typeof(string) });
@@ -78,11 +86,39 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
                 m => m.Name == nameof(Enumerable.LastOrDefault)
                      && m.GetParameters().Length == 1).MakeGenericMethod(typeof(char));
 
+        private static readonly MethodInfo _removeMethodInfoWithOneArg
+            = typeof(string).GetRuntimeMethod(nameof(string.Remove), new[] { typeof(int) });
+        private static readonly MethodInfo _removeMethodInfoWithTwoArgs
+            = typeof(string).GetRuntimeMethod(nameof(string.Remove), new[] { typeof(int), typeof(int) });
+
+        private static readonly MethodInfo[] _concatMethodInfos = typeof(string).GetRuntimeMethods()
+            .Where(
+                m => m.Name == nameof(string.Concat) &&
+                     (m.GetParameters()
+                          .All(p => p.ParameterType == typeof(string) ||
+                                    p.ParameterType == typeof(object)) ||
+                      m.GetParameters().Length == 1 &&
+                      (m.GetParameters()
+                          .Any(p => p.ParameterType == typeof(string[]) ||
+                                    p.ParameterType == typeof(object[]) ||
+                                    p.ParameterType == typeof(IEnumerable<string>))) ||
+                      m.IsGenericMethodDefinition &&
+                      m.GetGenericArguments().Length == 1 &&
+                      m.GetParameters()
+                          .Any(p => p.ParameterType.IsGenericType &&
+                                    p.ParameterType.GetGenericTypeDefinition() == typeof(IEnumerable<>))))
+            .ToArray();
+
         private readonly MySqlSqlExpressionFactory _sqlExpressionFactory;
 
-        public MySqlStringMethodTranslator(ISqlExpressionFactory sqlExpressionFactory)
+        public MySqlStringMethodTranslator(
+            MySqlSqlExpressionFactory sqlExpressionFactory,
+            MySqlTypeMappingSource typeMappingSource,
+            IMySqlOptions options)
         {
-            _sqlExpressionFactory = (MySqlSqlExpressionFactory)sqlExpressionFactory;
+            _sqlExpressionFactory = sqlExpressionFactory;
+            _typeMappingSource = typeMappingSource;
+            _options = options;
         }
 
         public virtual SqlExpression Translate(
@@ -93,7 +129,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
         {
             if (_indexOfMethodInfo.Equals(method))
             {
-                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory)
+                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory, _options)
                     .MakeIndexOfExpression(instance, arguments[0]);
             }
 
@@ -136,7 +172,28 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
                     instance.TypeMapping);
             }
 
-            if (_substringMethodInfo.Equals(method))
+            if (_substringMethodInfoWithOneArg.Equals(method))
+            {
+                return _sqlExpressionFactory.Function(
+                    "SUBSTRING",
+                    new[]
+                    {
+                        instance,
+                        _sqlExpressionFactory.Add(
+                            arguments[0],
+                            _sqlExpressionFactory.Constant(1)),
+                        _sqlExpressionFactory.NullableFunction(
+                            "CHAR_LENGTH",
+                            new[] { instance },
+                            typeof(int))
+                    },
+                    nullable: true,
+                    argumentsPropagateNullability: new[] { true, true, true },
+                    method.ReturnType,
+                    instance.TypeMapping);
+            }
+
+            if (_substringMethodInfoWithTwoArgs.Equals(method))
             {
                 return _sqlExpressionFactory.NullableFunction(
                     "SUBSTRING",
@@ -184,19 +241,19 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
 
             if (_containsMethodInfo.Equals(method))
             {
-                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory)
+                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory, _options)
                     .MakeContainsExpression(instance, arguments[0]);
             }
 
             if (_startsWithMethodInfo.Equals(method))
             {
-                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory)
+                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory, _options)
                     .MakeStartsWithExpression(instance, arguments[0]);
             }
 
             if (_endsWithMethodInfo.Equals(method))
             {
-                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory)
+                return new MySqlStringComparisonMethodTranslator(_sqlExpressionFactory, _options)
                     .MakeEndsWithExpression(instance, arguments[0]);
             }
 
@@ -262,6 +319,106 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
                         _sqlExpressionFactory.Constant(1)
                     },
                     method.ReturnType);
+            }
+
+            if (_removeMethodInfoWithOneArg.Equals(method))
+            {
+                return _sqlExpressionFactory.NullableFunction(
+                    "SUBSTRING",
+                    new[]
+                    {
+                        instance,
+                        _sqlExpressionFactory.Constant(1),
+                        arguments[0],
+                    },
+                    method.ReturnType,
+                    instance.TypeMapping);
+            }
+
+            if (_removeMethodInfoWithTwoArgs.Equals(method))
+            {
+                var firstSubString = _sqlExpressionFactory.NullableFunction(
+                    "SUBSTRING",
+                    new[]
+                    {
+                        instance,
+                        _sqlExpressionFactory.Constant(1),
+                        arguments[0]
+                    },
+                    method.ReturnType,
+                    instance.TypeMapping);
+
+                var secondSubString = _sqlExpressionFactory.NullableFunction(
+                    "SUBSTRING",
+                    new[]
+                    {
+                        instance,
+                        _sqlExpressionFactory.Add(
+                            _sqlExpressionFactory.Add(
+                                arguments[0],
+                                arguments[1]),
+                            _sqlExpressionFactory.Constant(1)),
+                        _sqlExpressionFactory.Subtract(
+                            _sqlExpressionFactory.NullableFunction(
+                                "CHAR_LENGTH",
+                                new[] {instance},
+                                typeof(int)),
+                            _sqlExpressionFactory.Add(
+                                arguments[0],
+                                arguments[1])),
+                    },
+                    method.ReturnType,
+                    instance.TypeMapping);
+
+                var concat = _sqlExpressionFactory.NullableFunction(
+                    "CONCAT",
+                    new[]
+                    {
+                        firstSubString,
+                        secondSubString
+                    },
+                    method.ReturnType,
+                    instance.TypeMapping);
+
+                return concat;
+            }
+
+            if (_concatMethodInfos.Contains(
+                (method.IsGenericMethod
+                    ? method.GetGenericMethodDefinition()
+                    : null) ?? method))
+            {
+                // Handle
+                //     string[]
+                //     IEnumerable<string>
+                //     object[]
+                //     IEnumerable<T>
+                // and
+                //     string, ...
+                //     object, ...
+                //
+                // Some call signature variants can never reach this code, because they will be directly called and thus only their result
+                // is translated.
+                var concatArguments = arguments[0] is MySqlComplexFunctionArgumentExpression mySqlComplexFunctionArgumentExpression
+                    ? new SqlExpression[] {mySqlComplexFunctionArgumentExpression}
+                    : arguments.Select(
+                            e => e switch
+                            {
+                                SqlConstantExpression c => _sqlExpressionFactory.Constant(c.Value.ToString()),
+                                SqlParameterExpression p => p.ApplyTypeMapping(
+                                    ((MySqlStringTypeMapping)_typeMappingSource.GetMapping(typeof(string))).Clone(forceToString: true)),
+                                _ => e,
+                            })
+                        .ToArray();
+
+                // We haven't implemented expansion of MySqlComplexFunctionArgumentExpression yet, so the default nullability check would
+                // result in an invalid SQL generation.
+                // TODO: Fix at some point.
+                return _sqlExpressionFactory.NullableFunction(
+                    "CONCAT",
+                    concatArguments,
+                    method.ReturnType,
+                    onlyNullWhenAnyNullPropagatingArgumentIsNull: arguments[0] is not MySqlComplexFunctionArgumentExpression);
             }
 
             return null;

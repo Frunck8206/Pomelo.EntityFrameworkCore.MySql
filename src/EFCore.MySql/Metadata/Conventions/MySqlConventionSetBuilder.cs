@@ -37,12 +37,18 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions
 
             conventionSet.ModelInitializedConventions.Add(new RelationalMaxIdentifierLengthConvention(64, Dependencies, RelationalDependencies));
 
-            var valueGeneratorConvention = new MySqlValueGenerationConvention(Dependencies, RelationalDependencies);
-            ReplaceConvention(conventionSet.EntityTypeBaseTypeChangedConventions, valueGeneratorConvention);
-            ReplaceConvention(conventionSet.EntityTypePrimaryKeyChangedConventions, valueGeneratorConvention);
-            ReplaceConvention(conventionSet.ForeignKeyAddedConventions, valueGeneratorConvention);
-            ReplaceConvention(conventionSet.ForeignKeyRemovedConventions, valueGeneratorConvention);
-            conventionSet.PropertyAnnotationChangedConventions.Add(valueGeneratorConvention);
+            conventionSet.EntityTypeAddedConventions.Add(new TableCharSetAttributeConvention(Dependencies));
+            conventionSet.EntityTypeAddedConventions.Add(new TableCollationAttributeConvention(Dependencies));
+            conventionSet.PropertyAddedConventions.Add(new ColumnCharSetAttributeConvention(Dependencies));
+            conventionSet.PropertyAddedConventions.Add(new ColumnCollationAttributeConvention(Dependencies));
+
+            var valueGenerationConvention = new MySqlValueGenerationConvention(Dependencies, RelationalDependencies);
+            ReplaceConvention(conventionSet.EntityTypeBaseTypeChangedConventions, valueGenerationConvention);
+            ReplaceConvention(conventionSet.EntityTypeAnnotationChangedConventions, (RelationalValueGenerationConvention)valueGenerationConvention);
+            ReplaceConvention(conventionSet.EntityTypePrimaryKeyChangedConventions, valueGenerationConvention);
+            ReplaceConvention(conventionSet.ForeignKeyAddedConventions, valueGenerationConvention);
+            ReplaceConvention(conventionSet.ForeignKeyRemovedConventions, valueGenerationConvention);
+            conventionSet.PropertyAnnotationChangedConventions.Add(valueGenerationConvention);
 
             return conventionSet;
         }

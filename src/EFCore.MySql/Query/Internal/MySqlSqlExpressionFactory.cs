@@ -28,9 +28,6 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
             _boolTypeMapping = _typeMappingSource.FindMapping(typeof(bool));
         }
 
-        public virtual RelationalTypeMapping FindMapping([NotNull] string storeTypeName)
-            => _typeMappingSource.FindMapping(storeTypeName);
-
         public virtual RelationalTypeMapping FindMapping(
             [NotNull] Type type,
             [CanBeNull] string storeTypeName,
@@ -160,7 +157,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
                 typeMapping);
         }
 
-        public MySqlComplexFunctionArgumentExpression ComplexFunctionArgument(
+        public virtual MySqlComplexFunctionArgumentExpression ComplexFunctionArgument(
             IEnumerable<SqlExpression> argumentParts,
             string delimiter,
             Type argumentType,
@@ -173,14 +170,16 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
                 typeMappedArgumentParts.Add(ApplyDefaultTypeMapping(argument));
             }
 
-            return new MySqlComplexFunctionArgumentExpression(
-                typeMappedArgumentParts,
-                delimiter,
-                argumentType,
+            return (MySqlComplexFunctionArgumentExpression)ApplyTypeMapping(
+                new MySqlComplexFunctionArgumentExpression(
+                    typeMappedArgumentParts,
+                    delimiter,
+                    argumentType,
+                    typeMapping),
                 typeMapping);
         }
 
-        public MySqlCollateExpression Collate(
+        public virtual MySqlCollateExpression Collate(
             SqlExpression valueExpression,
             string charset,
             string collation)
@@ -191,7 +190,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
                     collation,
                     null));
 
-        public MySqlRegexpExpression Regexp(
+        public virtual MySqlRegexpExpression Regexp(
             SqlExpression match,
             SqlExpression pattern)
             => (MySqlRegexpExpression)ApplyDefaultTypeMapping(
@@ -219,6 +218,13 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
                 left,
                 right,
                 typeMapping);
+
+        public virtual MySqlColumnAliasReferenceExpression ColumnAliasReference(
+            string alias,
+            SqlExpression expression,
+            Type type,
+            RelationalTypeMapping typeMapping = null)
+            => new MySqlColumnAliasReferenceExpression(alias, expression, type, typeMapping);
 
         #endregion Expression factory methods
 
@@ -346,7 +352,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.Internal
         private MySqlComplexFunctionArgumentExpression ApplyTypeMappingOnComplexFunctionArgument(MySqlComplexFunctionArgumentExpression complexFunctionArgumentExpression)
         {
             var inferredTypeMapping = ExpressionExtensions.InferTypeMapping(complexFunctionArgumentExpression.ArgumentParts.ToArray())
-                                      ?? _typeMappingSource.FindMapping(complexFunctionArgumentExpression.Type);
+                                      ?? (complexFunctionArgumentExpression.Type.IsArray
+                                          ? _typeMappingSource.FindMapping(
+                                              complexFunctionArgumentExpression.Type.GetElementType() ??
+                                              complexFunctionArgumentExpression.Type)
+                                          : _typeMappingSource.FindMapping(complexFunctionArgumentExpression.Type));
 
             return new MySqlComplexFunctionArgumentExpression(
                 complexFunctionArgumentExpression.ArgumentParts,

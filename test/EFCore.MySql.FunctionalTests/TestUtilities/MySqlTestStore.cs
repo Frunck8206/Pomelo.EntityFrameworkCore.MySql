@@ -11,8 +11,6 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.Configuration;
 using MySqlConnector;
-using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
-using Pomelo.EntityFrameworkCore.MySql.Storage;
 using Pomelo.EntityFrameworkCore.MySql.Tests;
 
 namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
@@ -26,28 +24,35 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
         private readonly string _scriptPath;
         private readonly bool _useConnectionString;
         private readonly bool _noBackslashEscapes;
-        private readonly string _databaseCharSet;
-        private readonly string _databaseCollation;
 
         protected override string OpenDelimiter => "`";
         protected override string CloseDelimiter => "`";
 
-        public static MySqlTestStore GetOrCreate(string name, bool useConnectionString = false, bool noBackslashEscapes = false)
-            => new MySqlTestStore(name, useConnectionString: useConnectionString, shared: true, noBackslashEscapes: noBackslashEscapes);
+        public static MySqlTestStore GetOrCreate(string name, bool useConnectionString = false, bool noBackslashEscapes = false, string databaseCollation = null)
+            => new MySqlTestStore(name, useConnectionString: useConnectionString, shared: true, noBackslashEscapes: noBackslashEscapes, databaseCollation: databaseCollation);
 
-        public static MySqlTestStore GetOrCreate(string name, string scriptPath, bool noBackslashEscapes = false)
-            => new MySqlTestStore(name, scriptPath: scriptPath, noBackslashEscapes: noBackslashEscapes);
+        public static MySqlTestStore GetOrCreate(string name, string scriptPath, bool noBackslashEscapes = false, string databaseCollation = null)
+            => new MySqlTestStore(name, scriptPath: scriptPath, noBackslashEscapes: noBackslashEscapes, databaseCollation: databaseCollation);
 
         public static MySqlTestStore GetOrCreateInitialized(string name)
             => new MySqlTestStore(name, shared: true).InitializeMySql(null, (Func<DbContext>)null, null);
 
-        public static MySqlTestStore Create(string name, bool useConnectionString = false, bool noBackslashEscapes = false)
-            => new MySqlTestStore(name, useConnectionString: useConnectionString, shared: false, noBackslashEscapes: noBackslashEscapes);
+        public static MySqlTestStore Create(string name, bool useConnectionString = false, bool noBackslashEscapes = false, string databaseCollation = null)
+            => new MySqlTestStore(name, useConnectionString: useConnectionString, shared: false, noBackslashEscapes: noBackslashEscapes, databaseCollation: databaseCollation);
 
         public static MySqlTestStore CreateInitialized(string name)
-            => new MySqlTestStore(name, shared: false).InitializeMySql(null, (Func<DbContext>)null, null);
+            => new MySqlTestStore(name, shared: false).InitializeMySql(null, null, null);
+
+        public static MySqlTestStore RecreateInitialized(string name)
+            => new MySqlTestStore(name, shared: false).InitializeMySql(null, null, null, c =>
+            {
+                c.Database.EnsureDeleted();
+                c.Database.EnsureCreated();
+            });
 
         public Lazy<ServerVersion> ServerVersion { get; }
+        public string DatabaseCharSet { get; }
+        public string DatabaseCollation { get; set; }
 
         // ReSharper disable VirtualMemberCallInConstructor
         private MySqlTestStore(
@@ -60,8 +65,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
             bool noBackslashEscapes = false)
             : base(name, shared)
         {
-            _databaseCharSet = databaseCharSet ?? "utf8mb4";
-            _databaseCollation = databaseCollation ?? ModernCsCollation; // all tests assume CS collation by default
+            DatabaseCharSet = databaseCharSet ?? "utf8mb4";
+            DatabaseCollation = databaseCollation ?? ModernCsCollation;
             _useConnectionString = useConnectionString;
             _noBackslashEscapes = noBackslashEscapes;
 
@@ -102,9 +107,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
             return builder
                 .UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery)
                 .CommandTimeout(GetCommandTimeout())
-                .ExecutionStrategy(d => new TestMySqlRetryingExecutionStrategy(d))
-                .CharSetBehavior(CharSetBehavior.AppendToAllColumns) // TODO: Change to NerverAppend.
-                .CharSet(CharSet.Utf8Mb4);
+                .ExecutionStrategy(d => new TestMySqlRetryingExecutionStrategy(d));
             // .EnableIndexOptimizedBooleanColumns(); // TODO: Activate for all test for .NET 5. Tests should use
             //       `ONLY_FULL_GROUP_BY` to ensure correct working of the
             //       expression visitor in all cases, which is blocked by
@@ -120,8 +123,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
             }
         }
 
-        public MySqlTestStore InitializeMySql(IServiceProvider serviceProvider, Func<DbContext> createContext, Action<DbContext> seed)
-            => (MySqlTestStore)Initialize(serviceProvider, createContext, seed);
+        public MySqlTestStore InitializeMySql(IServiceProvider serviceProvider, Func<DbContext> createContext, Action<DbContext> seed, Action<DbContext> clean = null)
+            => (MySqlTestStore)Initialize(serviceProvider, createContext, seed, clean);
 
         protected override void Initialize(Func<DbContext> createContext, Action<DbContext> seed, Action<DbContext> clean)
         {
@@ -129,7 +132,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
             {
                 if (_scriptPath != null)
                 {
-                    ExecuteScript(_scriptPath);
+                    ExecuteScript(new FileInfo(_scriptPath));
                 }
                 else
                 {
@@ -144,13 +147,19 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
 
         private bool CreateDatabase(Action<DbContext> clean)
         {
+            using var master = new MySqlConnection(CreateAdminConnectionString());
+            master.Open();
+
+            SetupCurrentDatabaseCollation(master);
+
+            string databaseSetupSql;
             if (DatabaseExists(Name))
             {
-                if (_scriptPath != null
-                    && !TestEnvironment.IsCI)
-                {
-                    return false;
-                }
+                // if (_scriptPath != null
+                //     && !TestEnvironment.IsCI)
+                // {
+                //     return false;
+                // }
 
                 using (var context = new DbContext(
                     AddProviderOptions(
@@ -160,17 +169,19 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
                 {
                     clean?.Invoke(context);
                     Clean(context);
-                    return true;
                 }
 
+                databaseSetupSql = GetAlterDatabaseStatement(Name, DatabaseCharSet, DatabaseCollation);
+
+                // databaseSetupSql = GetCreateDatabaseStatement(Name, DatabaseCharSet, DatabaseCollation);
                 // DeleteDatabase();
             }
-
-            using (var master = new MySqlConnection(CreateAdminConnectionString()))
+            else
             {
-                master.Open();
-                ExecuteNonQuery(master, GetCreateDatabaseStatement(master, Name, _databaseCharSet, _databaseCollation));
+                databaseSetupSql = GetCreateDatabaseStatement(Name, DatabaseCharSet, DatabaseCollation);
             }
+
+            ExecuteNonQuery(master, databaseSetupSql);
 
             return true;
         }
@@ -181,8 +192,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
             ExecuteNonQuery(master, $@"DROP DATABASE IF EXISTS `{Name}`;");
         }
 
-        private string GetCreateDatabaseStatement(DbConnection connection, string name, string charset = null, string collation = null)
-            => EnsureBackwardsCompatibleCollations(connection, $@"CREATE DATABASE `{name}`{(string.IsNullOrEmpty(charset) ? null : $" CHARSET {charset}")}{(string.IsNullOrEmpty(collation) ? null : $" COLLATE {collation}")};");
+        private static string GetCreateDatabaseStatement(string name, string charset = null, string collation = null)
+            => $@"CREATE DATABASE `{name}`{(string.IsNullOrEmpty(charset) ? null : $" CHARACTER SET {charset}")}{(string.IsNullOrEmpty(collation) ? null : $" COLLATE {collation}")};";
+
+        private static string GetAlterDatabaseStatement(string name, string charset = null, string collation = null)
+            => $@"ALTER DATABASE `{name}`{(string.IsNullOrEmpty(charset) ? null : $" CHARACTER SET {charset}")}{(string.IsNullOrEmpty(collation) ? null : $" COLLATE {collation}")};";
 
         private static bool DatabaseExists(string name)
         {
@@ -193,10 +207,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
         private static string CreateAdminConnectionString()
             => CreateConnectionString(null);
 
-        public void ExecuteScript(string scriptPath)
-        {
-            var script = File.ReadAllText(scriptPath);
-            Execute(
+        public void ExecuteScript(FileInfo scriptFile)
+            => ExecuteScript(File.ReadAllText(scriptFile.FullName));
+
+        public void ExecuteScript(string script)
+            => Execute(
                 Connection, command =>
                 {
                     foreach (var batch in
@@ -210,7 +225,6 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
 
                     return 0;
                 }, string.Empty);
-        }
 
         public override void Clean(DbContext context)
             => context.Database.EnsureClean();
@@ -343,6 +357,9 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities
 
             return script;
         }
+
+        private void SetupCurrentDatabaseCollation(DbConnection connection)
+            => DatabaseCollation = EnsureBackwardsCompatibleCollations(connection, DatabaseCollation);
 
         public string GetCaseSensitiveUtf8Mb4Collation()
             => ServerVersion.Value.Supports.DefaultCharSetUtf8Mb4

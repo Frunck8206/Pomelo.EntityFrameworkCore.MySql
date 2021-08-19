@@ -10,7 +10,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
 {
     public class ServerVersionSupport
     {
-        public ServerVersion ServerVersion { get; }
+        public virtual ServerVersion ServerVersion { get; }
 
         public ServerVersionSupport([NotNull] ServerVersion serverVersion)
         {
@@ -21,7 +21,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
             => throw new NotImplementedException(); // TODO: Remove or implement!
 
         public virtual bool Version(string versionString)
-            => Version(ServerVersion.FromString(versionString));
+            => Version(ServerVersion.Parse(versionString));
 
         public virtual bool Version(ServerVersion serverVersion)
             => ServerVersion.Type == serverVersion.Type &&
@@ -30,7 +30,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
 
         public virtual bool PropertyOrVersion(string propertyNameOrServerVersion)
         {
-            if (ServerVersion.TryFromString(propertyNameOrServerVersion, out var serverVersion))
+            if (ServerVersion.TryParse(propertyNameOrServerVersion, out var serverVersion))
             {
                 return ServerVersion.Type == serverVersion.Type &&
                        ServerVersion.TypeIdentifier == serverVersion.TypeIdentifier &&
@@ -65,6 +65,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
         public virtual bool DefaultCharSetUtf8Mb4 => false;
         public virtual bool DefaultExpression => false;
         public virtual bool AlternativeDefaultExpression => false;
+        public virtual bool SpatialIndexes => false;
         public virtual bool SpatialReferenceSystemRestrictedColumns => false;
         public virtual bool SpatialFunctionAdditions => false;
         public virtual bool SpatialSupportFunctionAdditions => false;
@@ -77,5 +78,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
         public virtual bool JsonDataTypeEmulation => false;
         public virtual bool ImplicitBoolCheckUsesIndex => false;
         public virtual bool Sequences => false;
+        public virtual bool MySqlBug96947Workaround => false;
+        public virtual bool MySqlBug104294Workaround => false;
+        public virtual bool FullTextParser => false;
+        public virtual bool InformationSchemaCheckConstraintsTable => false;
+        public virtual bool IdentifyJsonColumsByCheckConstraints => false;
+        public virtual bool MySqlBugLimit0Offset0ExistsWorkaround => false;
     }
 }

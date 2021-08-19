@@ -7,7 +7,6 @@ using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore.Storage;
-using Pomelo.EntityFrameworkCore.MySql.Internal;
 
 // ReSharper disable once CheckNamespace
 namespace Microsoft.EntityFrameworkCore.Infrastructure
@@ -19,17 +18,9 @@ namespace Microsoft.EntityFrameworkCore.Infrastructure
         {
         }
 
-        /// <summary>
-        ///     Configures the Default CharSet Behavior
-        /// </summary>
-        public virtual MySqlDbContextOptionsBuilder CharSetBehavior(CharSetBehavior charSetBehavior)
-            => WithOption(e => e.WithCharSetBehavior(charSetBehavior));
-
-        /// <summary>
-        ///     Configures the ANSI CharSet
-        /// </summary>
-        public virtual MySqlDbContextOptionsBuilder CharSet(CharSet charSet)
-            => WithOption(e => e.WithCharSet(charSet));
+        [Obsolete("Call the Fluent API extension method 'HasCharSet()' on the builder object of your model/entities/properties instead. To get the exact behavior as with `CharSet()`, call 'modelBuilder.HasCharSet(charSet, DelegationMode.ApplyToColumns)'.", true)]
+        public virtual MySqlDbContextOptionsBuilder CharSet(CharSet charSet) // TODO: Remove for EF Core 6.
+            => throw new NotImplementedException("Call the Fluent API extension method 'HasCharSet()' on the builder object of your model/entities/properties instead. To get the exact behavior as with `CharSet()`, call 'modelBuilder.HasCharSet(charSet, DelegationMode.ApplyToColumns)'.");
 
         /// <summary>
         ///     Configures the context to use the default retrying <see cref="IExecutionStrategy" />.
@@ -111,5 +102,25 @@ namespace Microsoft.EntityFrameworkCore.Infrastructure
         /// </summary>
         public virtual MySqlDbContextOptionsBuilder EnableIndexOptimizedBooleanColumns(bool enable = true)
             => WithOption(e => e.WithIndexOptimizedBooleanColumns(enable));
+
+        /// <summary>
+        ///     Configures the context to automatically limit the length of `System.String` mapped columns, that have not explicitly mapped
+        ///     to a store type (e.g. `varchar(1024)`), to ensure that at least two indexed columns will be allowed on a given table (this
+        ///     is the default if you don't configure this option).
+        ///     If you intend to use `HasPrefixLength()` for those kind of columns, set this option to `false`.
+        /// </summary>
+        public virtual MySqlDbContextOptionsBuilder LimitKeyedOrIndexedStringColumnLength(bool enable = true)
+            => WithOption(e => e.WithKeyedOrIndexedStringColumnLengthLimit(enable));
+
+        /// <summary>
+        ///     Configures the context to translate string related methods, containing a parameter of type <see cref="StringComparison"/>,
+        ///     to their SQL equivalent, even though MySQL might not be able to use indexes when executing the query, resulting in decreased
+        ///     performance. Whether MySQL is able to use indexes for the query, depends on the <see cref="StringComparison"/> option, the
+        ///     underlying collation and the scenario.
+        ///     It is also possible to just use `EF.Functions.Collate()`, possibly in addition to `string.ToUpper()` if needed, to achieve
+        ///     the same result but with full control over the SQL generation.
+        /// </summary>
+        public virtual MySqlDbContextOptionsBuilder EnableStringComparisonTranslations(bool enable = true)
+            => WithOption(e => e.WithStringComparisonTranslations(enable));
     }
 }

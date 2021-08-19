@@ -66,8 +66,16 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             => extensionExpression switch
             {
                 MySqlJsonTraversalExpression jsonTraversalExpression => VisitJsonPathTraversal(jsonTraversalExpression),
+                MySqlColumnAliasReferenceExpression columnAliasReferenceExpression => VisitColumnAliasReference(columnAliasReferenceExpression),
                 _ => base.VisitExtension(extensionExpression)
             };
+
+        private Expression VisitColumnAliasReference(MySqlColumnAliasReferenceExpression columnAliasReferenceExpression)
+        {
+            Sql.Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(columnAliasReferenceExpression.Alias));
+
+            return columnAliasReferenceExpression;
+        }
 
         protected virtual Expression VisitJsonPathTraversal(MySqlJsonTraversalExpression expression)
         {
@@ -190,7 +198,12 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
 
         protected override Expression VisitCrossApply(CrossApplyExpression crossApplyExpression)
         {
-            Sql.Append("JOIN LATERAL ");
+            Sql.Append("JOIN ");
+
+            if (crossApplyExpression.Table is not TableExpression)
+            {
+                Sql.Append("LATERAL ");
+            }
 
             Visit(crossApplyExpression.Table);
 
@@ -201,7 +214,12 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
 
         protected override Expression VisitOuterApply(OuterApplyExpression outerApplyExpression)
         {
-            Sql.Append("LEFT JOIN LATERAL ");
+            Sql.Append("LEFT JOIN ");
+
+            if (outerApplyExpression.Table is not TableExpression)
+            {
+                Sql.Append("LATERAL ");
+            }
 
             Visit(outerApplyExpression.Table);
 
@@ -212,6 +230,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
 
         protected override Expression VisitSqlBinary(SqlBinaryExpression sqlBinaryExpression)
         {
+            Check.NotNull(sqlBinaryExpression, nameof(sqlBinaryExpression));
+
             if (sqlBinaryExpression.OperatorType == ExpressionType.Add &&
                 sqlBinaryExpression.Type == typeof(string) &&
                 sqlBinaryExpression.Left.TypeMapping?.ClrType == typeof(string) &&
@@ -226,8 +246,48 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
                 return sqlBinaryExpression;
             }
 
-            return base.VisitSqlBinary(sqlBinaryExpression);
+            var requiresBrackets = RequiresBrackets(sqlBinaryExpression.Left);
+
+            if (requiresBrackets)
+            {
+                Sql.Append("(");
+            }
+
+            Visit(sqlBinaryExpression.Left);
+
+            if (requiresBrackets)
+            {
+                Sql.Append(")");
+            }
+
+            Sql.Append(GetOperator(sqlBinaryExpression));
+
+            // EF uses unary Equal and NotEqual to represent is-null checking.
+            // These need to be surrounded with parenthesis in various cases (e.g. where TRUE = x IS NOT NULL).
+            // See https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql/issues/1309
+            requiresBrackets = RequiresBrackets(sqlBinaryExpression.Right) ||
+                               !requiresBrackets &&
+                               sqlBinaryExpression.Right is SqlUnaryExpression sqlUnaryExpression &&
+                               (sqlUnaryExpression.OperatorType == ExpressionType.Equal || sqlUnaryExpression.OperatorType == ExpressionType.NotEqual);
+
+            if (requiresBrackets)
+            {
+                Sql.Append("(");
+            }
+
+            Visit(sqlBinaryExpression.Right);
+
+            if (requiresBrackets)
+            {
+                Sql.Append(")");
+            }
+
+            return sqlBinaryExpression;
         }
+
+        private static bool RequiresBrackets(SqlExpression expression)
+            => expression is SqlBinaryExpression ||
+               expression is LikeExpression;
 
         public virtual Expression VisitMySqlRegexp(MySqlRegexpExpression mySqlRegexpExpression)
         {
@@ -240,7 +300,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             return mySqlRegexpExpression;
         }
 
-        public Expression VisitMySqlMatch(MySqlMatchExpression mySqlMatchExpression)
+        public virtual Expression VisitMySqlMatch(MySqlMatchExpression mySqlMatchExpression)
         {
             Check.NotNull(mySqlMatchExpression, nameof(mySqlMatchExpression));
 
@@ -396,7 +456,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             return castMapping;
         }
 
-        public Expression VisitMySqlComplexFunctionArgumentExpression(MySqlComplexFunctionArgumentExpression mySqlComplexFunctionArgumentExpression)
+        public virtual Expression VisitMySqlComplexFunctionArgumentExpression(MySqlComplexFunctionArgumentExpression mySqlComplexFunctionArgumentExpression)
         {
             Check.NotNull(mySqlComplexFunctionArgumentExpression, nameof(mySqlComplexFunctionArgumentExpression));
 
@@ -418,7 +478,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             return mySqlComplexFunctionArgumentExpression;
         }
 
-        public Expression VisitMySqlCollateExpression(MySqlCollateExpression mySqlCollateExpression)
+        public virtual Expression VisitMySqlCollateExpression(MySqlCollateExpression mySqlCollateExpression)
         {
             Check.NotNull(mySqlCollateExpression, nameof(mySqlCollateExpression));
 
@@ -431,7 +491,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionVisitors.Internal
             return mySqlCollateExpression;
         }
 
-        public Expression VisitMySqlBinaryExpression(MySqlBinaryExpression mySqlBinaryExpression)
+        public virtual Expression VisitMySqlBinaryExpression(MySqlBinaryExpression mySqlBinaryExpression)
         {
             if (mySqlBinaryExpression.OperatorType == MySqlBinaryExpressionOperatorType.NonOptimizedEqual)
             {

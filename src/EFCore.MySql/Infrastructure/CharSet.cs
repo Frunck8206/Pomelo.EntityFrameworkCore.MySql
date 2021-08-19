@@ -10,8 +10,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
 {
     public class CharSet
     {
-        public string Name { get; }
-        public int MaxBytesPerChar { get; }
+        public virtual string Name { get; }
+        public virtual int MaxBytesPerChar { get; }
 
         public CharSet(string name, int maxBytesPerChar)
         {
@@ -21,11 +21,13 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
             MaxBytesPerChar = maxBytesPerChar > 0 ? maxBytesPerChar : throw new ArgumentOutOfRangeException(nameof(maxBytesPerChar));
         }
 
-        public bool IsUnicode => MaxBytesPerChar >= 2;
+        public static implicit operator string(CharSet charSet) => charSet?.ToString();
+
+        public virtual bool IsUnicode => MaxBytesPerChar >= 2;
 
         public override string ToString() => Name;
 
-        protected bool Equals(CharSet other)
+        protected virtual bool Equals(CharSet other)
         {
             return Name == other.Name &&
                    MaxBytesPerChar == other.MaxBytesPerChar;
@@ -100,7 +102,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure
         public static CharSet Utf16 = new CharSet(nameof(Utf16), 4);
         public static CharSet Utf16Le = new CharSet(nameof(Utf16Le), 4);
         public static CharSet Utf32 = new CharSet(nameof(Utf32), 4);
-        public static CharSet Utf8 = new CharSet(nameof(Utf8), 3);
+        [Obsolete("Use 'Utf8Mb4' instead.")] public static CharSet Utf8 = new CharSet(nameof(Utf8), 3);
         public static CharSet Utf8Mb3 = new CharSet(nameof(Utf8Mb3), 3); // Alias for "utf8"
         public static CharSet Utf8Mb4 = new CharSet(nameof(Utf8Mb4), 4);
 

@@ -10,7 +10,6 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using MySqlConnector;
-using Pomelo.EntityFrameworkCore.MySql.Storage;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Internal
 {
@@ -22,14 +21,19 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
         {
             ConnectionSettings = new MySqlConnectionSettings();
             ServerVersion = null;
-            CharSetBehavior = CharSetBehavior.AppendToAllColumns; // TODO: Change to `NeverAppend` for EF Core 5.
 
-            // We do not use the MySQL versions's default, but explicitly use `utf8mb4`
-            // if not changed by the user.
-            CharSet = CharSet.Utf8Mb4;
+            // We explicitly use `utf8mb4` in all instances, where charset based calculations need to be done, but accessing annotations
+            // isn't possible (e.g. in `MySqlTypeMappingSource`).
+            // This is also being used as the universal fallback character set, if no character set was explicitly defined for the model,
+            // which will result in similar behavior as in previous versions and ensure that databases use a decent/the recommended charset
+            // by default, if none was explicitly set.
+            DefaultCharSet = CharSet.Utf8Mb4;
 
             // NCHAR and NVARCHAR are prefdefined by MySQL.
             NationalCharSet = CharSet.Utf8Mb3;
+
+            // Optimize space and performance for GUID columns.
+            DefaultGuidCollation = "ascii_general_ci";
 
             ReplaceLineBreaksWithCharFunction = true;
             DefaultDataTypeMappings = new MySqlDefaultDataTypeMappings();
@@ -39,6 +43,9 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
 
             // TODO: Change to `true` for EF Core 5.
             IndexOptimizedBooleanColumns = false;
+
+            LimitKeyedOrIndexedStringColumnLength = true;
+            StringComparisonTranslations = false;
         }
 
         public virtual void Initialize(IDbContextOptions options)
@@ -48,8 +55,6 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
 
             ConnectionSettings = GetConnectionSettings(mySqlOptions);
             ServerVersion = mySqlOptions.ServerVersion ?? throw new InvalidOperationException($"The {nameof(ServerVersion)} has not been set.");
-            CharSetBehavior = mySqlOptions.NullableCharSetBehavior ?? CharSetBehavior;
-            CharSet = mySqlOptions.CharSet ?? CharSet;
             NoBackslashEscapes = mySqlOptions.NoBackslashEscapes;
             ReplaceLineBreaksWithCharFunction = mySqlOptions.ReplaceLineBreaksWithCharFunction;
             DefaultDataTypeMappings = ApplyDefaultDataTypeMappings(mySqlOptions.DefaultDataTypeMappings, ConnectionSettings);
@@ -58,6 +63,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
                 : null);
             IndexOptimizedBooleanColumns = mySqlOptions.IndexOptimizedBooleanColumns;
             JsonChangeTrackingOptions = mySqlJsonOptions?.JsonChangeTrackingOptions ?? default;
+            LimitKeyedOrIndexedStringColumnLength = mySqlOptions.LimitKeyedOrIndexedStringColumnLength;
+            StringComparisonTranslations = mySqlOptions.StringComparisonTranslations;
         }
 
         public virtual void Validate(IDbContextOptions options)
@@ -87,22 +94,6 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
                 throw new InvalidOperationException(
                     CoreStrings.SingletonOptionChanged(
                         nameof(MySqlConnectionStringBuilder.GuidFormat),
-                        nameof(DbContextOptionsBuilder.UseInternalServiceProvider)));
-            }
-
-            if (!Equals(CharSetBehavior, mySqlOptions.NullableCharSetBehavior ?? CharSetBehavior.AppendToAllColumns))
-            {
-                throw new InvalidOperationException(
-                    CoreStrings.SingletonOptionChanged(
-                        nameof(MySqlDbContextOptionsBuilder.CharSetBehavior),
-                        nameof(DbContextOptionsBuilder.UseInternalServiceProvider)));
-            }
-
-            if (!Equals(CharSet, mySqlOptions.CharSet ?? CharSet.Utf8Mb4))
-            {
-                throw new InvalidOperationException(
-                    CoreStrings.SingletonOptionChanged(
-                        nameof(MySqlDbContextOptionsBuilder.CharSet),
                         nameof(DbContextOptionsBuilder.UseInternalServiceProvider)));
             }
 
@@ -157,6 +148,22 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
                         nameof(MySqlJsonOptionsExtension.JsonChangeTrackingOptions),
                         nameof(DbContextOptionsBuilder.UseInternalServiceProvider)));
             }
+
+            if (!Equals(LimitKeyedOrIndexedStringColumnLength, mySqlOptions.LimitKeyedOrIndexedStringColumnLength))
+            {
+                throw new InvalidOperationException(
+                    CoreStrings.SingletonOptionChanged(
+                        nameof(MySqlDbContextOptionsBuilder.LimitKeyedOrIndexedStringColumnLength),
+                        nameof(DbContextOptionsBuilder.UseInternalServiceProvider)));
+            }
+
+            if (!Equals(StringComparisonTranslations, mySqlOptions.StringComparisonTranslations))
+            {
+                throw new InvalidOperationException(
+                    CoreStrings.SingletonOptionChanged(
+                        nameof(MySqlDbContextOptionsBuilder.EnableStringComparisonTranslations),
+                        nameof(DbContextOptionsBuilder.UseInternalServiceProvider)));
+            }
         }
 
         protected virtual MySqlDefaultDataTypeMappings ApplyDefaultDataTypeMappings(MySqlDefaultDataTypeMappings defaultDataTypeMappings, MySqlConnectionSettings connectionSettings)
@@ -201,33 +208,25 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
         }
 
         private static MySqlConnectionSettings GetConnectionSettings(MySqlOptionsExtension relationalOptions)
-        {
-            if (relationalOptions.Connection != null)
-            {
-                return new MySqlConnectionSettings(relationalOptions.Connection);
-            }
+            => relationalOptions.Connection != null
+                ? new MySqlConnectionSettings(relationalOptions.Connection)
+                : new MySqlConnectionSettings(relationalOptions.ConnectionString);
 
-            if (relationalOptions.ConnectionString != null)
-            {
-                return new MySqlConnectionSettings(relationalOptions.ConnectionString);
-            }
-
-            throw new InvalidOperationException(RelationalStrings.NoConnectionOrConnectionString);
-        }
-
-        protected bool Equals(MySqlOptions other)
+        protected virtual bool Equals(MySqlOptions other)
         {
             return Equals(ConnectionSettings, other.ConnectionSettings) &&
                    Equals(ServerVersion, other.ServerVersion) &&
-                   CharSetBehavior == other.CharSetBehavior &&
-                   Equals(CharSet, other.CharSet) &&
+                   Equals(DefaultCharSet, other.DefaultCharSet) &&
                    Equals(NationalCharSet, other.NationalCharSet) &&
+                   Equals(DefaultGuidCollation, other.DefaultGuidCollation) &&
                    NoBackslashEscapes == other.NoBackslashEscapes &&
                    ReplaceLineBreaksWithCharFunction == other.ReplaceLineBreaksWithCharFunction &&
                    Equals(DefaultDataTypeMappings, other.DefaultDataTypeMappings) &&
                    Equals(SchemaNameTranslator, other.SchemaNameTranslator) &&
                    IndexOptimizedBooleanColumns == other.IndexOptimizedBooleanColumns &&
-                   JsonChangeTrackingOptions == other.JsonChangeTrackingOptions;
+                   JsonChangeTrackingOptions == other.JsonChangeTrackingOptions &&
+                   LimitKeyedOrIndexedStringColumnLength == other.LimitKeyedOrIndexedStringColumnLength &&
+                   StringComparisonTranslations == other.StringComparisonTranslations;
         }
 
         public override bool Equals(object obj)
@@ -253,30 +252,36 @@ namespace Pomelo.EntityFrameworkCore.MySql.Internal
         public override int GetHashCode()
         {
             var hashCode = new HashCode();
+
             hashCode.Add(ConnectionSettings);
             hashCode.Add(ServerVersion);
-            hashCode.Add((int) CharSetBehavior);
-            hashCode.Add(CharSet);
+            hashCode.Add(DefaultCharSet);
             hashCode.Add(NationalCharSet);
+            hashCode.Add(DefaultGuidCollation);
             hashCode.Add(NoBackslashEscapes);
             hashCode.Add(ReplaceLineBreaksWithCharFunction);
             hashCode.Add(DefaultDataTypeMappings);
             hashCode.Add(SchemaNameTranslator);
             hashCode.Add(IndexOptimizedBooleanColumns);
             hashCode.Add(JsonChangeTrackingOptions);
+            hashCode.Add(LimitKeyedOrIndexedStringColumnLength);
+            hashCode.Add(StringComparisonTranslations);
+
             return hashCode.ToHashCode();
         }
 
         public virtual MySqlConnectionSettings ConnectionSettings { get; private set; }
         public virtual ServerVersion ServerVersion { get; private set; }
-        public virtual CharSetBehavior CharSetBehavior { get; private set; }
-        public virtual CharSet CharSet { get; private set; }
+        public virtual CharSet DefaultCharSet { get; private set; }
         public virtual CharSet NationalCharSet { get; }
+        public virtual string DefaultGuidCollation { get; private set; }
         public virtual bool NoBackslashEscapes { get; private set; }
         public virtual bool ReplaceLineBreaksWithCharFunction { get; private set; }
         public virtual MySqlDefaultDataTypeMappings DefaultDataTypeMappings { get; private set; }
         public virtual MySqlSchemaNameTranslator SchemaNameTranslator { get; private set; }
         public virtual bool IndexOptimizedBooleanColumns { get; private set; }
         public virtual MySqlJsonChangeTrackingOptions JsonChangeTrackingOptions { get; private set; }
+        public virtual bool LimitKeyedOrIndexedStringColumnLength { get; private set; }
+        public virtual bool StringComparisonTranslations { get; private set; }
     }
 }

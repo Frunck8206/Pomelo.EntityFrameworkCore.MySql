@@ -17,26 +17,31 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
     /// </summary>
     public class MySqlStringTypeMapping : MySqlTypeMapping
     {
+        private readonly bool _forceToString;
         private const int UnicodeMax = 4000;
         private const int AnsiMax = 8000;
 
         private readonly int _maxSpecificSize;
         private readonly IMySqlOptions _options;
 
-        public bool IsUnquoted { get; }
+        public virtual bool IsUnquoted { get; }
+        public virtual bool IsNationalChar
+            => StoreTypeNameBase.StartsWith("n") && StoreTypeNameBase.Contains("char");
 
         public MySqlStringTypeMapping(
             [NotNull] string storeType,
             IMySqlOptions options,
+            StoreTypePostfix storeTypePostfix,
             bool unicode = true,
             int? size = null,
             bool fixedLength = false,
-            bool unquoted = false)
+            bool unquoted = false,
+            bool forceToString = false)
             : this(
                 new RelationalTypeMappingParameters(
                     new CoreTypeMappingParameters(typeof(string)),
                     storeType,
-                    StoreTypePostfix.None, // Has to be None until EF #11896 is fixed
+                    storeTypePostfix,
                     unicode
                         ? fixedLength
                             ? System.Data.DbType.StringFixedLength
@@ -51,7 +56,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
                     ? MySqlDbType.String
                     : MySqlDbType.VarString,
                 options,
-                unquoted)
+                unquoted,
+                forceToString)
         {
         }
 
@@ -63,11 +69,13 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
             RelationalTypeMappingParameters parameters,
             MySqlDbType mySqlDbType,
             IMySqlOptions options,
-            bool isUnquoted)
+            bool isUnquoted,
+            bool forceToString)
             : base(parameters, mySqlDbType)
         {
             _maxSpecificSize = CalculateSize(parameters.Unicode, parameters.Size);
             _options = options;
+            _forceToString = forceToString;
             IsUnquoted = isUnquoted;
         }
 
@@ -82,10 +90,10 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
         /// <param name="parameters"> The parameters for this mapping. </param>
         /// <returns> The newly created mapping. </returns>
         protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)
-            => new MySqlStringTypeMapping(parameters, MySqlDbType, _options, IsUnquoted);
+            => new MySqlStringTypeMapping(parameters, MySqlDbType, _options, IsUnquoted, _forceToString);
 
-        public virtual RelationalTypeMapping Clone(bool unquoted)
-            => new MySqlStringTypeMapping(Parameters, MySqlDbType, _options, unquoted);
+        public virtual RelationalTypeMapping Clone(bool? unquoted = null, bool? forceToString = null)
+            => new MySqlStringTypeMapping(Parameters, MySqlDbType, _options, unquoted ?? IsUnquoted, forceToString ?? _forceToString);
 
         /// <summary>
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
@@ -99,8 +107,12 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
             // -1 (unbounded) to avoid size inference.
 
             var value = parameter.Value;
-            int? length;
+            if (_forceToString && value != null && value != DBNull.Value)
+            {
+                value = value.ToString();
+            }
 
+            int? length;
             if (value is string stringValue)
             {
                 length = stringValue.Length;
@@ -114,16 +126,26 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
                 length = null;
             }
 
-            parameter.Value = value;
             parameter.Size = value == null || value == DBNull.Value || length != null && length <= _maxSpecificSize
                 ? _maxSpecificSize
                 : -1;
+
+            if (parameter.Value != value)
+            {
+                parameter.Value = value;
+            }
         }
 
         protected override string GenerateNonNullSqlLiteral(object value)
-            => IsUnquoted
-                ? EscapeSqlLiteral((string)value)
-                : EscapeSqlLiteralWithLineBreaks((string)value, _options);
+        {
+            var stringValue = _forceToString
+                ? value.ToString()
+                : (string)value;
+
+            return IsUnquoted
+                ? EscapeSqlLiteral(stringValue)
+                : EscapeSqlLiteralWithLineBreaks(stringValue, _options);
+        }
 
         public static string EscapeSqlLiteralWithLineBreaks(string value, IMySqlOptions options)
         {

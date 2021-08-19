@@ -309,7 +309,7 @@ namespace Pomelo.EntityFrameworkCore.MySql
         public void UseMySql_with_ServerVersion_FromString()
         {
             var builder = new DbContextOptionsBuilder();
-            var serverVersion = ServerVersion.FromString("8.0.21-mysql");
+            var serverVersion = ServerVersion.Parse("8.0.21-mysql");
 
             builder.UseMySql(
                 "Server=foo",
@@ -339,6 +339,33 @@ namespace Pomelo.EntityFrameworkCore.MySql
             Assert.Equal(serverVersion.Version, mySqlOptions.ServerVersion.Version);
             Assert.Equal(serverVersion.Type, mySqlOptions.ServerVersion.Type);
             Assert.Equal(serverVersion.TypeIdentifier, mySqlOptions.ServerVersion.TypeIdentifier);
+        }
+
+        [Fact]
+        public void UseMySql_without_connection_string()
+        {
+            var builder = new DbContextOptionsBuilder();
+            var serverVersion = ServerVersion.AutoDetect(AppConfig.ConnectionString);
+
+            builder.UseMySql(serverVersion);
+
+            var mySqlOptions = new MySqlOptions();
+            mySqlOptions.Initialize(builder.Options);
+        }
+
+        [Fact]
+        public void UseMySql_without_connection_explicit_DefaultDataTypeMappings_is_applied()
+        {
+            var builder = new DbContextOptionsBuilder();
+
+            builder.UseMySql(
+                AppConfig.ServerVersion,
+                b => b.DefaultDataTypeMappings(m => m.WithClrBoolean(MySqlBooleanType.Bit1)));
+
+            var mySqlOptions = new MySqlOptions();
+            mySqlOptions.Initialize(builder.Options);
+
+            Assert.Equal(MySqlBooleanType.Bit1, mySqlOptions.DefaultDataTypeMappings.ClrBoolean);
         }
     }
 }

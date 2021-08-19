@@ -1,6 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using NetTopologySuite.Geometries;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Pomelo.EntityFrameworkCore.MySql.Metadata.Internal;
 using Xunit;
 
@@ -227,6 +230,9 @@ DROP PROCEDURE `POMELO_BEFORE_DROP_PRIMARY_KEY`;");
         public virtual void CreateTable_with_SchemaNameTranslator()
         {
             Generate(
+                optionsBuilder => optionsBuilder.SchemaBehavior(
+                    MySqlSchemaBehavior.Translate,
+                    (schemaName, objectName) => $"{schemaName}_{objectName}"),
                 null,
                 new MigrationOperation[]
                 {
@@ -245,14 +251,39 @@ DROP PROCEDURE `POMELO_BEFORE_DROP_PRIMARY_KEY`;");
                         }
                     }
                 },
-                default,
-                null,
-                null,
-                (schemaName, objectName) => $"{schemaName}_{objectName}");
+                MigrationsSqlGenerationOptions.Default);
 
             Assert.Equal(
                 @"CREATE TABLE `IceCreamParlor_IceCreams` (
     `Name` varchar(255) NOT NULL
+);
+",
+                Sql,
+                ignoreLineEndingDifferences: true);
+        }
+
+        [ConditionalFact]
+        public virtual void CreateTable_with_ValueGenerationStrategy_int_value()
+        {
+            Generate(
+                new CreateTableOperation
+                {
+                    Name = "IceCreamShops",
+                    Columns =
+                    {
+                        new AddColumnOperation
+                        {
+                            Name = "IceCreamShopId",
+                            ClrType = typeof(int),
+                            ColumnType = "int",
+                            [MySqlAnnotationNames.ValueGenerationStrategy] = (int)MySqlValueGenerationStrategy.IdentityColumn,
+                        }
+                    }
+                });
+
+            Assert.Equal(
+                @"CREATE TABLE `IceCreamShops` (
+    `IceCreamShopId` int NOT NULL AUTO_INCREMENT
 );
 ",
                 Sql,

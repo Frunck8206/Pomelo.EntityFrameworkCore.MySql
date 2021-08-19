@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Query.Internal;
 
@@ -35,24 +36,42 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
         private static readonly MethodInfo _indexOfMethodInfo
             = typeof(string).GetRuntimeMethod(nameof(string.IndexOf), new[] {typeof(string), typeof(StringComparison)});
 
+        internal static readonly MethodInfo[] StringComparisonMethodInfos =
+        {
+            _equalsMethodInfo,
+            _staticEqualsMethodInfo,
+            _startsWithMethodInfo,
+            _endsWithMethodInfo,
+            _containsMethodInfo,
+            _indexOfMethodInfo,
+        };
+
+        internal static readonly MethodInfo[] RelationalErrorHandledStringComparisonMethodInfos =
+        {
+            _equalsMethodInfo,
+            _staticEqualsMethodInfo,
+        };
+
         private readonly SqlExpression _caseSensitiveComparisons;
 
         private readonly MySqlSqlExpressionFactory _sqlExpressionFactory;
+        private readonly IMySqlOptions _options;
 
-        public MySqlStringComparisonMethodTranslator(ISqlExpressionFactory sqlExpressionFactory)
+        public MySqlStringComparisonMethodTranslator(ISqlExpressionFactory sqlExpressionFactory, IMySqlOptions options)
         {
             _sqlExpressionFactory = (MySqlSqlExpressionFactory)sqlExpressionFactory;
+            _options = options;
             _caseSensitiveComparisons = _sqlExpressionFactory.Constant(
                 new[] {StringComparison.Ordinal, StringComparison.CurrentCulture, StringComparison.InvariantCulture});
         }
 
-        public SqlExpression Translate(
+        public virtual SqlExpression Translate(
             SqlExpression instance,
             MethodInfo method,
             IReadOnlyList<SqlExpression> arguments,
             IDiagnosticsLogger<DbLoggerCategory.Query> logger)
         {
-            if (Equals(method, _equalsMethodInfo) && instance != null)
+            if (Equals(method, _equalsMethodInfo) && instance != null && _options.StringComparisonTranslations)
             {
                 return MakeStringEqualsExpression(
                     instance,
@@ -61,7 +80,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                 );
             }
 
-            if (Equals(method, _staticEqualsMethodInfo))
+            if (Equals(method, _staticEqualsMethodInfo) && _options.StringComparisonTranslations)
             {
                 return MakeStringEqualsExpression(
                     arguments[0],
@@ -70,7 +89,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                 );
             }
 
-            if (Equals(method, _startsWithMethodInfo) && instance != null)
+            if (Equals(method, _startsWithMethodInfo) && instance != null && _options.StringComparisonTranslations)
             {
                 return MakeStartsWithExpression(
                     instance,
@@ -79,7 +98,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                 );
             }
 
-            if (Equals(method, _endsWithMethodInfo) && instance != null)
+            if (Equals(method, _endsWithMethodInfo) && instance != null && _options.StringComparisonTranslations)
             {
                 return MakeEndsWithExpression(
                     instance,
@@ -88,7 +107,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                 );
             }
 
-            if (Equals(method, _containsMethodInfo) && instance != null)
+            if (Equals(method, _containsMethodInfo) && instance != null && _options.StringComparisonTranslations)
             {
                 return MakeContainsExpression(
                     instance,
@@ -97,7 +116,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                 );
             }
 
-            if (Equals(method, _indexOfMethodInfo) && instance != null)
+            if (Equals(method, _indexOfMethodInfo) && instance != null && _options.StringComparisonTranslations)
             {
                 return MakeIndexOfExpression(
                     instance,
@@ -109,7 +128,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
             return null;
         }
 
-        public SqlExpression MakeStringEqualsExpression(
+        public virtual SqlExpression MakeStringEqualsExpression(
             [NotNull] SqlExpression leftValue,
             [NotNull] SqlExpression rightValue,
             [NotNull] SqlExpression stringComparison)
@@ -157,7 +176,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
             );
         }
 
-        public SqlExpression MakeStartsWithExpression(
+        public virtual SqlExpression MakeStartsWithExpression(
             [NotNull] SqlExpression target,
             [NotNull] SqlExpression prefix,
             [CanBeNull] SqlExpression stringComparison = null)
@@ -215,7 +234,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                     true));
         }
 
-        public SqlExpression MakeEndsWithExpression(
+        public virtual SqlExpression MakeEndsWithExpression(
             [NotNull] SqlExpression target,
             [NotNull] SqlExpression suffix,
             [CanBeNull] SqlExpression stringComparison = null)
@@ -273,7 +292,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                     false));
         }
 
-        public SqlExpression MakeContainsExpression(
+        public virtual SqlExpression MakeContainsExpression(
             [NotNull] SqlExpression target,
             [NotNull] SqlExpression search,
             [CanBeNull] SqlExpression stringComparison = null)
@@ -450,7 +469,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                         _sqlExpressionFactory.Constant(0)));
         }
 
-        public SqlExpression MakeIndexOfExpression(
+        public virtual SqlExpression MakeIndexOfExpression(
             [NotNull] SqlExpression target,
             [NotNull] SqlExpression search,
             [CanBeNull] SqlExpression stringComparison = null)
@@ -462,6 +481,12 @@ namespace Pomelo.EntityFrameworkCore.MySql.Query.ExpressionTranslators.Internal
                     e => e,
                     search,
                     e => e);
+            }
+
+            // Users have to opt-in, to use string method translations with an explicit StringComparison parameter.
+            if (!_options.StringComparisonTranslations)
+            {
+                return null;
             }
 
             if (TryGetExpressionValue<StringComparison>(stringComparison, out var cmp))

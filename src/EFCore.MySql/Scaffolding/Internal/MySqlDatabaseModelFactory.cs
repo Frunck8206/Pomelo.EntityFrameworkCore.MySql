@@ -14,6 +14,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Scaffolding;
 using Microsoft.EntityFrameworkCore.Scaffolding.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Utilities;
 using Microsoft.Extensions.Logging;
 using MySqlConnector;
@@ -21,7 +22,6 @@ using Pomelo.EntityFrameworkCore.MySql.Extensions;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Metadata.Internal;
-using Pomelo.EntityFrameworkCore.MySql.Storage;
 using Pomelo.EntityFrameworkCore.MySql.Storage.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
@@ -29,17 +29,22 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
     public class MySqlDatabaseModelFactory : DatabaseModelFactory
     {
         private readonly IDiagnosticsLogger<DbLoggerCategory.Scaffolding> _logger;
+        private readonly IRelationalTypeMappingSource _typeMappingSource;
         private readonly IMySqlOptions _options;
 
-        protected MySqlScaffoldingConnectionSettings Settings { get; set; }
+        protected virtual MySqlScaffoldingConnectionSettings Settings { get; set; }
 
         public MySqlDatabaseModelFactory(
             [NotNull] IDiagnosticsLogger<DbLoggerCategory.Scaffolding> logger,
-            IMySqlOptions options)
+            [NotNull] IRelationalTypeMappingSource typeMappingSource,
+            [NotNull] IMySqlOptions options)
         {
             Check.NotNull(logger, nameof(logger));
+            Check.NotNull(typeMappingSource, nameof(typeMappingSource));
+            Check.NotNull(options, nameof(options));
 
             _logger = logger;
+            _typeMappingSource = typeMappingSource;
             _options = options;
             Settings = new MySqlScaffoldingConnectionSettings(string.Empty);
         }
@@ -63,8 +68,6 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
             SetupMySqlOptions(connection);
             _logger.Logger.LogInformation($"Using {nameof(ServerVersion)} '{_options.ServerVersion}'.");
 
-            var databaseModel = new DatabaseModel();
-
             var connectionStartedOpen = connection.State == ConnectionState.Open;
             if (!connectionStartedOpen)
             {
@@ -73,21 +76,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
 
             try
             {
-                databaseModel.DatabaseName = connection.Database;
-                databaseModel.DefaultSchema = GetDefaultSchema(connection);
-
-                var schemaList = Enumerable.Empty<string>().ToList();
-                var tableList = options.Tables.ToList();
-                var tableFilter = GenerateTableFilter(tableList, schemaList);
-
-                var tables = GetTables(connection, tableFilter);
-                foreach (var table in tables)
-                {
-                    table.Database = databaseModel;
-                    databaseModel.Tables.Add(table);
-                }
-
-                return databaseModel;
+                return GetDatabase(connection, options);
             }
             finally
             {
@@ -131,6 +120,57 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
             }
         }
 
+        private const string GetDatabaseSettings = @"SELECT
+	`DEFAULT_CHARACTER_SET_NAME`,
+    `DEFAULT_COLLATION_NAME`
+FROM
+	`INFORMATION_SCHEMA`.`SCHEMATA`
+WHERE
+	`SCHEMA_NAME` = SCHEMA()";
+
+        protected virtual DatabaseModel GetDatabase(DbConnection connection, DatabaseModelFactoryOptions options)
+        {
+            var databaseModel = new DatabaseModel
+            {
+                DatabaseName = connection.Database,
+                DefaultSchema = GetDefaultSchema(connection)
+            };
+
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = GetDatabaseSettings;
+
+                using (var reader = command.ExecuteReader())
+                {
+                    if (reader.Read())
+                    {
+                        var defaultCharSet = reader.GetValueOrDefault<string>("DEFAULT_CHARACTER_SET_NAME");
+                        var defaultCollation = reader.GetValueOrDefault<string>("DEFAULT_COLLATION_NAME");
+
+                        databaseModel[MySqlAnnotationNames.CharSet] = Settings.CharSet
+                            ? defaultCharSet
+                            : null;
+                        databaseModel.Collation = Settings.Collation
+                            ? defaultCollation
+                            : null;
+                    }
+                }
+            }
+
+            var schemaList = Enumerable.Empty<string>().ToList();
+            var tableList = options.Tables.ToList();
+            var tableFilter = GenerateTableFilter(tableList, schemaList);
+
+            var tables = GetTables(connection, tableFilter, (string)databaseModel[MySqlAnnotationNames.CharSet], databaseModel.Collation);
+            foreach (var table in tables)
+            {
+                table.Database = databaseModel;
+                databaseModel.Tables.Add(table);
+            }
+
+            return databaseModel;
+        }
+
         protected virtual string GetDefaultSchema(DbConnection connection)
             => null;
 
@@ -140,11 +180,15 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
             => tables.Count > 0 ? (s, t) => tables.Contains(t) : (Func<string, string, bool>)null;
 
         private const string GetTablesQuery = @"SELECT
-    `TABLE_NAME`,
-    `TABLE_TYPE`,
-    IF(`TABLE_COMMENT` = 'VIEW' AND `TABLE_TYPE` = 'VIEW', '', `TABLE_COMMENT`) AS `TABLE_COMMENT`
+    `t`.`TABLE_NAME`,
+    `t`.`TABLE_TYPE`,
+    IF(`t`.`TABLE_COMMENT` = 'VIEW' AND `t`.`TABLE_TYPE` = 'VIEW', '', `t`.`TABLE_COMMENT`) AS `TABLE_COMMENT`,
+    `ccsa`.`CHARACTER_SET_NAME` as `TABLE_CHARACTER_SET`,
+    `t`.`TABLE_COLLATION`
 FROM
-    `INFORMATION_SCHEMA`.`TABLES`
+    `INFORMATION_SCHEMA`.`TABLES` as `t`
+LEFT JOIN
+	`INFORMATION_SCHEMA`.`COLLATION_CHARACTER_SET_APPLICABILITY` as `ccsa` ON `ccsa`.`COLLATION_NAME` = `t`.`TABLE_COLLATION`
 WHERE
     `TABLE_SCHEMA` = SCHEMA()
 AND
@@ -152,7 +196,9 @@ AND
 
         protected virtual IEnumerable<DatabaseTable> GetTables(
             DbConnection connection,
-            Func<string, string, bool> filter)
+            Func<string, string, bool> filter,
+            string defaultCharSet,
+            string defaultCollation)
         {
             using (var command = connection.CreateCommand())
             {
@@ -165,6 +211,8 @@ AND
                         var name = reader.GetValueOrDefault<string>("TABLE_NAME");
                         var type = reader.GetValueOrDefault<string>("TABLE_TYPE");
                         var comment = reader.GetValueOrDefault<string>("TABLE_COMMENT");
+                        var charset = reader.GetValueOrDefault<string>("TABLE_CHARACTER_SET");
+                        var collation = reader.GetValueOrDefault<string>("TABLE_COLLATION");
 
                         var table = string.Equals(type, "base table", StringComparison.OrdinalIgnoreCase)
                             ? new DatabaseTable()
@@ -173,6 +221,14 @@ AND
                         table.Schema = null;
                         table.Name = name;
                         table.Comment = string.IsNullOrEmpty(comment) ? null : comment;
+                        table[MySqlAnnotationNames.CharSet] = Settings.CharSet &&
+                                                              charset != defaultCharSet
+                            ? charset
+                            : null;
+                        table[RelationalAnnotationNames.Collation] = Settings.Collation &&
+                                                                     collation != defaultCollation
+                            ? collation
+                            : null;
 
                         var isValidByFilter = filter?.Invoke(table.Schema, table.Name) ?? true;
                         var isValidBySettings = !(table is DatabaseView) || Settings.Views;
@@ -186,7 +242,7 @@ AND
                 }
 
                 // This is done separately due to MARS property may be turned off
-                GetColumns(connection, tables, filter);
+                GetColumns(connection, tables, filter, defaultCharSet, defaultCollation);
                 GetPrimaryKeys(connection, tables);
                 GetIndexes(connection, tables, filter);
                 GetConstraints(connection, tables);
@@ -205,8 +261,9 @@ AND
     `COLLATION_NAME`,
     `COLUMN_TYPE`,
     `COLUMN_COMMENT`,
-    `EXTRA`,
-    `GENERATION_EXPRESSION` /*!80003 ,
+    `EXTRA`/*!50706 ,
+    `GENERATION_EXPRESSION` */ /*M!100200 ,
+    `GENERATION_EXPRESSION` */ /*!80003 ,
     `SRS_ID` */
 FROM
 	`INFORMATION_SCHEMA`.`COLUMNS`
@@ -220,10 +277,14 @@ ORDER BY
         protected virtual void GetColumns(
             DbConnection connection,
             IReadOnlyList<DatabaseTable> tables,
-            Func<string, string, bool> tableFilter)
+            Func<string, string, bool> tableFilter,
+            string defaultCharSet,
+            string defaultCollation)
         {
             foreach (var table in tables)
             {
+                var columnTypeOverrides = GetColumnTypeOverrides(connection, table);
+
                 using (var command = connection.CreateCommand())
                 {
                     command.CommandText = string.Format(GetColumnsQuery, table.Name);
@@ -237,13 +298,17 @@ ORDER BY
                             var dataType = reader.GetValueOrDefault<string>("DATA_TYPE");
                             var charset = reader.GetValueOrDefault<string>("CHARACTER_SET_NAME");
                             var collation = reader.GetValueOrDefault<string>("COLLATION_NAME");
-                            var columType = reader.GetValueOrDefault<string>("COLUMN_TYPE");
+                            var columnType = reader.GetValueOrDefault<string>("COLUMN_TYPE");
                             var extra = reader.GetValueOrDefault<string>("EXTRA");
-                            var generation = reader.GetValueOrDefault<string>("GENERATION_EXPRESSION").NullIfEmpty();
                             var comment = reader.GetValueOrDefault<string>("COLUMN_COMMENT");
 
+                            // Generated colums are not supported on every MySQL/MariaDB version.
+                            var generation = reader.HasName("GENERATION_EXPRESSION")
+                                ? reader.GetValueOrDefault<string>("GENERATION_EXPRESSION").NullIfEmpty()
+                                : null;
+
                             // MariaDB does not support SRID column restrictions.
-                            var srid = reader.GetColumnSchema().Any(c => string.Equals(c.ColumnName, "SRS_ID", StringComparison.OrdinalIgnoreCase))
+                            var srid = reader.HasName("SRS_ID")
                                 ? reader.GetValueOrDefault<uint?>("SRS_ID")
                                 : null;
 
@@ -251,23 +316,64 @@ ORDER BY
                                 ? (bool?)extra.Contains("stored generated", StringComparison.OrdinalIgnoreCase)
                                 : null;
 
-                            // MySQL saves the generation expression with enclosing parenthesis, while MariaDB doesn't.
-                            generation = generation != null &&
-                                         _options.ServerVersion.Supports.ParenthesisEnclosedGeneratedColumnExpressions
-                                ? Regex.Replace(generation, @"^\((.*)\)$", "$1", RegexOptions.Singleline)
-                                : generation;
+                            // Cleanup the column type, because it might contain trailing C style comments on MariaDB, like the following,
+                            // if an explicit cast is being done in the SELECT of a VIEW:
+                            //     datetime /* mariadb-5.3 */
+                            columnType = Regex.Replace(columnType, @"\s*/\*(?:.*?)\*/\s*$", string.Empty, RegexOptions.Singleline);
+
+                            // Override this column's type, if we detected earlier that this column should actually by added to the model
+                            // with a different type than the one returned by INFORMATION_SCHEMA.COLUMNS.
+                            // This ensures, that e.g. the `json` alias for the `longtext` type for MariaDB databases will be added to the
+                            // model as `json` instead of as `longtext`.
+                            columnType = columnTypeOverrides.TryGetValue(name, out var columnTypeOverride)
+                                ? columnTypeOverride((dataType: dataType, charset: charset, collation: collation))
+                                : columnType;
+
+                            // MySQL enforces the `utf8mb4` charset and `utf8mb4_bin` collation for `json` columns and MariaDB will use them
+                            // automatically for `json` columns as well.
+                            // Both will refuse explicit specifications of other charsets/collations, even though `json` is just an alias
+                            // for `longtext` for MariaDB and setting `longtext` to other charsets/collations works fine.
+                            // We therefore do not scaffold thouse charsets/collations in the first place, so that users don't get confused.
+                            if (columnType == "json")
+                            {
+                                charset = null;
+                                collation = null;
+                            }
+
+                            if (generation is not null)
+                            {
+                                // MySQL saves the generation expression with enclosing parenthesis, while MariaDB doesn't.
+                                generation = _options.ServerVersion.Supports.ParenthesisEnclosedGeneratedColumnExpressions
+                                    ? Regex.Replace(generation, @"^\((.*)\)$", "$1", RegexOptions.Singleline)
+                                    : generation;
+
+                                // MySQL 8 contains a regression bug, that escapes the outer quotes of a string in a generated expression.
+                                generation = _options.ServerVersion.Supports.MySqlBug104294Workaround
+                                    ? generation.Replace(@"\'", @"'")
+                                    : generation;
+                            }
 
                             var isDefaultValueSqlFunction = IsDefaultValueSqlFunction(defaultValue, dataType);
+                            var isDefaultValueExpression = false;
 
-                            defaultValue = generation == null
-                                ? FilterClrDefaults(
-                                    dataType,
-                                    nullable,
-                                    _options.ServerVersion.Supports.AlternativeDefaultExpression &&
-                                    defaultValue != null
-                                        ? ConvertDefaultValueFromMariaDbToMySql(defaultValue)
-                                        : defaultValue)
-                                : null;
+                            if (defaultValue != null)
+                            {
+                                // MySQL 8.0.13+ fully supports complex default value expressions.
+                                isDefaultValueExpression = extra.Contains("DEFAULT_GENERATED", StringComparison.OrdinalIgnoreCase) &&
+                                                           !IsSimpleNumericDefaultValue(defaultValue);
+
+                                // MariaDB uses a slightly different syntax.
+                                defaultValue = _options.ServerVersion.Supports.AlternativeDefaultExpression
+                                    ? ConvertDefaultValueFromMariaDbToMySql(defaultValue, out isDefaultValueExpression)
+                                    : defaultValue;
+
+                                defaultValue = generation == null
+                                    ? FilterClrDefaults(
+                                        dataType,
+                                        nullable,
+                                        defaultValue)
+                                    : null;
+                            }
 
                             ValueGenerated? valueGenerated;
                             if (extra.IndexOf("auto_increment", StringComparison.Ordinal) >= 0)
@@ -300,16 +406,26 @@ ORDER BY
                             {
                                 Table = table,
                                 Name = name,
-                                StoreType = columType,
+                                StoreType = columnType,
                                 IsNullable = nullable,
-                                DefaultValueSql = CreateDefaultValueString(defaultValue, dataType, isDefaultValueSqlFunction),
+                                DefaultValueSql = CreateDefaultValueString(defaultValue, dataType, isDefaultValueSqlFunction, isDefaultValueExpression),
                                 ComputedColumnSql = generation,
                                 IsStored = isStored,
                                 ValueGenerated = valueGenerated,
-                                Comment = string.IsNullOrEmpty(comment) ? null : comment,
-                                [MySqlAnnotationNames.CharSet] = Settings.CharSet ? charset : null,
-                                [MySqlAnnotationNames.Collation] = Settings.Collation ? collation : null,
-                                [MySqlAnnotationNames.SpatialReferenceSystemId] = srid.HasValue ? (int?)(int)srid.Value : null,
+                                Comment = string.IsNullOrEmpty(comment)
+                                    ? null
+                                    : comment,
+                                [MySqlAnnotationNames.CharSet] = Settings.CharSet &&
+                                                                 charset != (table[MySqlAnnotationNames.CharSet] as string ?? defaultCharSet)
+                                    ? charset
+                                    : null,
+                                Collation = Settings.Collation &&
+                                            collation != (table[RelationalAnnotationNames.Collation] as string ?? defaultCollation)
+                                    ? collation
+                                    : null,
+                                [MySqlAnnotationNames.SpatialReferenceSystemId] = srid.HasValue
+                                    ? (int?)(int)srid.Value
+                                    : null,
                             };
 
                             table.Columns.Add(column);
@@ -353,8 +469,10 @@ ORDER BY
         /// See https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql/issues/994#issuecomment-568271740
         /// for tables with differences.
         /// </summary>
-        protected virtual string ConvertDefaultValueFromMariaDbToMySql([NotNull] string defaultValue)
+        protected virtual string ConvertDefaultValueFromMariaDbToMySql([NotNull] string defaultValue, out bool isDefaultValueExpression)
         {
+            isDefaultValueExpression = false;
+
             if (string.Equals(defaultValue, "NULL", StringComparison.OrdinalIgnoreCase))
             {
                 return null;
@@ -370,8 +488,13 @@ ORDER BY
                     .Replace("''", "'");
             }
 
+            isDefaultValueExpression = !IsSimpleNumericDefaultValue(defaultValue);
+
             return defaultValue;
         }
+
+        private static bool IsSimpleNumericDefaultValue(string defaultValue)
+            => Regex.IsMatch(defaultValue, @"^\d+(?:\.\d+)?$");
 
         protected virtual string FilterClrDefaults(string dataTypeName, bool nullable, string defaultValue)
         {
@@ -412,14 +535,16 @@ ORDER BY
             return defaultValue;
         }
 
-        protected virtual string CreateDefaultValueString(string defaultValue, string dataType, bool isSqlFunction)
+        protected virtual string CreateDefaultValueString(
+            string defaultValue, string dataType, bool isSqlFunction, bool isDefaultValueExpression)
         {
             if (defaultValue == null)
             {
                 return null;
             }
 
-            if (isSqlFunction)
+            if (isSqlFunction ||
+                isDefaultValueExpression)
             {
                 return defaultValue;
             }
@@ -481,6 +606,19 @@ ORDER BY
                                     key[MySqlAnnotationNames.IndexPrefixLength] = prefixLengths;
                                 }
 
+                                var firstKeyColumn = key.Columns[0];
+
+                                if (key.Columns.Count == 1 &&
+                                    firstKeyColumn.ValueGenerated == null &&
+                                    (firstKeyColumn.DefaultValueSql == null ||
+                                     string.Equals(firstKeyColumn.DefaultValueSql, "uuid()", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(firstKeyColumn.DefaultValueSql, "uuid_to_bin(uuid())", StringComparison.OrdinalIgnoreCase)) &&
+                                    _typeMappingSource.FindMapping(firstKeyColumn.StoreType) is MySqlGuidTypeMapping)
+                                {
+                                    firstKeyColumn.ValueGenerated = ValueGenerated.OnAdd;
+                                    firstKeyColumn.DefaultValueSql = null;
+                                }
+
                                 table.PrimaryKey = key;
                             }
                             catch (Exception ex)
@@ -503,6 +641,8 @@ ORDER BY
      AND `TABLE_NAME` = '{1}'
      AND `INDEX_NAME` <> 'PRIMARY'
      GROUP BY `INDEX_NAME`, `NON_UNIQUE`, `INDEX_TYPE`;";
+
+        private const string GetCreateTableStatementQuery = @"SHOW CREATE TABLE `{0}`.`{1}`;";
 
         protected virtual void GetIndexes(
             DbConnection connection,
@@ -613,7 +753,53 @@ ORDER BY
                         }
                     }
                 }
+
+                //
+                // Post-process the full-text indices, because we cannot open to data readers over the same connection at the same time.
+                //
+
+                var fullTextIndexes = table.Indexes
+                    .Where(i => ((bool?) i[MySqlAnnotationNames.FullTextIndex]).GetValueOrDefault())
+                    .ToList();
+
+                if (fullTextIndexes.Any())
+                {
+                    var createTableQuery = GetCreateTableQuery(connection, table);
+                    var fullTextParsers = GetFullTextParsers(createTableQuery);
+
+                    foreach (var fullTextIndex in fullTextIndexes)
+                    {
+                        if (fullTextParsers.TryGetValue(fullTextIndex.Name, out var fullTextParser))
+                        {
+                            fullTextIndex[MySqlAnnotationNames.FullTextParser] = fullTextParser;
+                        }
+                    }
+                }
             }
+        }
+
+        private static Dictionary<string, string> GetFullTextParsers(string createTableQuery)
+            => Regex.Matches(
+                    createTableQuery,
+                    @"\s*FULLTEXT\s+(?:INDEX|KEY)\s+(?:`(?<IndexName>(?:[^`]|``)+)`|(?<IndexName>\S+)).*WITH\s+PARSER\s+(?:`(?<FullTextParser>(?:[^`]|``)+)`|(?<FullTextParser>\S+))",
+                    RegexOptions.IgnoreCase)
+                .Where(m => m.Success)
+                .ToDictionary(
+                    m => m.Groups["IndexName"].Value.Replace("``", "`"),
+                    m => m.Groups["FullTextParser"].Value.Replace("``", "`"));
+
+        private static string GetCreateTableQuery(DbConnection connection, DatabaseTable table)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = string.Format(GetCreateTableStatementQuery, connection.Database, table.Name);
+
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return reader.GetValueOrDefault<string>("Create Table");
+            }
+
+            throw new InvalidOperationException("The statement 'SHOW CREATE TABLE' did not return any results.");
         }
 
         private const string GetConstraintsQuery = @"SELECT
@@ -653,7 +839,7 @@ ORDER BY
                                 // different casing than the actual table name. (#1017)
                                 // In the unlikely event that there are multiple tables with the same spelling, differing only in casing,
                                 // we can't be certain which is the right match, so rather fail to be safe.
-                                referencedTable = tables.Single(t => string.Equals(t.Name, referencedTableName, StringComparison.OrdinalIgnoreCase));
+                                referencedTable = tables.SingleOrDefault(t => string.Equals(t.Name, referencedTableName, StringComparison.OrdinalIgnoreCase));
                             }
                             if (referencedTable != null)
                             {
@@ -676,6 +862,52 @@ ORDER BY
                     }
                 }
             }
+        }
+
+        private const string GetCheckConstraintsQuery = @"SELECT `c`.`CONSTRAINT_NAME`, `c`.`CHECK_CLAUSE`
+FROM `INFORMATION_SCHEMA`.`CHECK_CONSTRAINTS` as `c`
+INNER JOIN `INFORMATION_SCHEMA`.`TABLE_CONSTRAINTS` as `t` on `t`.`CONSTRAINT_CATALOG` = `c`.`CONSTRAINT_CATALOG` and `t`.`CONSTRAINT_SCHEMA` = `c`.`CONSTRAINT_SCHEMA` and `t`.`CONSTRAINT_NAME` = `c`.`CONSTRAINT_NAME`
+WHERE `t`.`TABLE_SCHEMA` = '{0}' AND `t`.`CONSTRAINT_SCHEMA` = `t`.`TABLE_SCHEMA` AND `t`.`TABLE_NAME` = '{1}';";
+
+        protected virtual Dictionary<string, Func<(string dataType, string charset, string collation), string>> GetColumnTypeOverrides(
+            DbConnection connection,
+            DatabaseTable table)
+        {
+            var columnTypeOverrides = new Dictionary<string, Func<(string dataType, string charset, string collation), string>>();
+
+            // For MariaDB. the `json` type is just an alias for `longtext`.
+            // In newer versions however, it adds a json_valid(`columnName`) check constraint when a column was created with the type
+            // `json`, which we can use as a very strong heuristic that a `longtext` column is being used as a `json` column.
+            if (_options.ServerVersion.Supports.IdentifyJsonColumsByCheckConstraints &&
+                _options.ServerVersion.Supports.InformationSchemaCheckConstraintsTable)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = string.Format(GetCheckConstraintsQuery, connection.Database, table.Name);
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var constraintName = reader.GetValueOrDefault<string>("CONSTRAINT_NAME");
+                    var checkClause = reader.GetValueOrDefault<string>("CHECK_CLAUSE");
+
+                    var match = Regex.Match(
+                        checkClause,
+                        @"json_valid\s*\(\s*`(?<columnName>(?:[^`]|``)+)`\s*\)",
+                        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+                    if (match.Success)
+                    {
+                        columnTypeOverrides.TryAdd(
+                            match.Groups["columnName"].Value,
+                            t => t.charset == "utf8mb4" &&
+                                 t.collation == "utf8mb4_bin"
+                                ? "json"
+                                : t.dataType);
+                    }
+                }
+            }
+
+            return columnTypeOverrides;
         }
 
         protected virtual ReferentialAction? ConvertToReferentialAction(string onDeleteAction)

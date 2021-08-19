@@ -12,8 +12,10 @@ using Xunit;
 using Microsoft.EntityFrameworkCore.Internal;
 using System.Diagnostics;
 using Microsoft.EntityFrameworkCore.Diagnostics.Internal;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Pomelo.EntityFrameworkCore.MySql.Diagnostics.Internal;
 using Microsoft.EntityFrameworkCore.Scaffolding;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
@@ -38,10 +40,10 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.Scaffolding
 
         private void Test(string createSql, IEnumerable<string> tables, IEnumerable<string> schemas, Action<DatabaseModel> asserter, string cleanupSql)
         {
-            Fixture.TestStore.ExecuteNonQuery(createSql);
-
             try
             {
+                Fixture.TestStore.ExecuteNonQuery(createSql);
+
                 var databaseModelFactory = new MySqlDatabaseModelFactory(
                     new DiagnosticsLogger<DbLoggerCategory.Scaffolding>(
                         Fixture.ListLoggerFactory,
@@ -49,6 +51,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.Scaffolding
                         new DiagnosticListener("Fake"),
                         new MySqlLoggingDefinitions(),
                         new NullDbContextLogger()),
+                    Fixture.ServiceProvider.GetService<IRelationalTypeMappingSource>(),
                     Fixture.ServiceProvider.GetService<IMySqlOptions>());
 
                 var databaseModel = databaseModelFactory.Create(Fixture.TestStore.ConnectionString,
@@ -84,8 +87,8 @@ CREATE TABLE Denali ( id int );",
                         Assert.Equal("Everest", table.Name);
                     },
                 @"
-DROP TABLE Everest;
-DROP TABLE Denali;");
+DROP TABLE IF EXISTS Everest;
+DROP TABLE IF EXISTS Denali;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -105,8 +108,8 @@ CREATE TABLE Denali ( id int );",
                         Assert.Equal("Everest", table.Name);
                     },
                 @"
-DROP TABLE Everest;
-DROP TABLE Denali;");
+DROP TABLE IF EXISTS Everest;
+DROP TABLE IF EXISTS Denali;");
         }
 
         #endregion
@@ -130,8 +133,36 @@ CREATE TABLE Denali ( id int );",
                             e => Assert.Equal("Everest", e.Name));
                     },
                 @"
-DROP TABLE Everest;
-DROP TABLE Denali;");
+DROP TABLE IF EXISTS Everest;
+DROP TABLE IF EXISTS Denali;");
+        }
+
+        [Fact]
+        public void Create_table_with_collation()
+        {
+            Test(
+                @"
+CREATE TABLE `Mountains` (
+    `Name` varchar(255) NOT NULL COLLATE latin1_general_cs,
+    `Text1` longtext NOT NULL COLLATE latin1_general_ci,
+    `Text2` longtext NOT NULL
+) COLLATE latin1_general_ci;",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                {
+                    var table = Assert.Single(dbModel.Tables);
+
+                    Assert.Equal("latin1_general_ci", table[RelationalAnnotationNames.Collation]);
+
+                    Assert.Collection(
+                        table.Columns.OrderBy(c => c.Name),
+                        c => Assert.Equal("latin1_general_cs", c.Collation),
+                        c => Assert.Null(c.Collation),
+                        c => Assert.Null(c.Collation));
+                },
+                @"
+DROP TABLE IF EXISTS `Mountains`;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -156,7 +187,7 @@ CREATE TABLE MountainsColumns (
                         Assert.Single(table.Columns.Where(c => c.Name == "Id"));
                         Assert.Single(table.Columns.Where(c => c.Name == "Name"));
                     },
-                @"DROP TABLE MountainsColumns;");
+                @"DROP TABLE IF EXISTS MountainsColumns;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -173,7 +204,7 @@ CREATE TABLE MountainsColumns (
                         Assert.Equal("Place", pk.Table.Name);
                         Assert.Equal(new List<string> { "Id" }, pk.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE Place;");
+                @"DROP TABLE IF EXISTS Place;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -198,7 +229,7 @@ CREATE INDEX IX_Location_Name ON Place (Location, Name);",
                         Assert.Equal("Place", uniqueConstraint.Table.Name);
                         Assert.Equal(new List<string> { "Name" }, uniqueConstraint.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE Place;");
+                @"DROP TABLE IF EXISTS Place;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -227,7 +258,7 @@ CREATE INDEX IX_INDEX on IndexTable ( IndexProperty );",
                         Assert.Single(table.Indexes.Where(c => c.Name == "IX_NAME"));
                         Assert.Single(table.Indexes.Where(c => c.Name == "IX_INDEX"));
                     },
-                @"DROP TABLE IndexTable;");
+                @"DROP TABLE IF EXISTS IndexTable;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -272,9 +303,227 @@ CREATE TABLE SecondDependent (
                         Assert.Equal(ReferentialAction.NoAction, secondFk.OnDelete);
                     },
                 @"
-DROP TABLE SecondDependent;
-DROP TABLE FirstDependent;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS SecondDependent;
+DROP TABLE IF EXISTS FirstDependent;
+DROP TABLE IF EXISTS PrincipalTable;");
+        }
+
+        [Fact]
+        public void Create_dependent_table_with_missing_principal_table_creates_model_without_it()
+        {
+            Test(
+                @"
+CREATE TABLE PrincipalTable (
+    Id int PRIMARY KEY
+);
+
+CREATE TABLE DependentTable (
+    Id int PRIMARY KEY,
+    ForeignKeyId int,
+    FOREIGN KEY (ForeignKeyId) REFERENCES PrincipalTable(Id)
+);",
+                new[] { "DependentTable" },
+                Enumerable.Empty<string>(),
+                dbModel =>
+                {
+                    var table = Assert.Single(dbModel.Tables);
+                    Assert.Equal("DependentTable", table.Name);
+                },
+                @"
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;");
+        }
+
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.IdentifyJsonColumsByCheckConstraints))]
+        public void Create_json_column()
+        {
+            Test(
+                @"
+CREATE TABLE `PlaceDetails` (
+    `JsonCharacteristics` json,
+    `TextDescription` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+    `TextDependingOnValidJsonCharacteristics` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci CHECK (json_valid(`JsonCharacteristics`)),
+    `TextCharacteristics` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci CHECK (json_valid(`TextCharacteristics`)),
+    `OtherJsonCharacteristics` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin CHECK (json_valid(`OtherJsonCharacteristics`))
+) CHARACTER SET latin1 COLLATE latin1_general_ci;",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                    {
+                        var table = Assert.Single(dbModel.Tables.Where(t => t.Name == "PlaceDetails"));
+                        var jsonCharacteristicsColumn = Assert.Single(table.Columns.Where(c => c.Name == "JsonCharacteristics"));
+                        var textDescriptionColumn = Assert.Single(table.Columns.Where(c => c.Name == "TextDescription"));
+                        var textDependingOnValidJsonCharacteristicsColumn = Assert.Single(table.Columns.Where(c => c.Name == "TextDependingOnValidJsonCharacteristics"));
+                        var textCharacteristicsColumn = Assert.Single(table.Columns.Where(c => c.Name == "TextCharacteristics"));
+                        var otherJsonCharacteristicsColumn = Assert.Single(table.Columns.Where(c => c.Name == "OtherJsonCharacteristics"));
+
+                        Assert.Equal("json", jsonCharacteristicsColumn.StoreType);
+                        Assert.Null(jsonCharacteristicsColumn[MySqlAnnotationNames.CharSet]);
+                        Assert.Null(jsonCharacteristicsColumn.Collation);
+
+                        Assert.Equal("longtext", textDescriptionColumn.StoreType);
+                        Assert.Equal("utf8mb4", textDescriptionColumn[MySqlAnnotationNames.CharSet]);
+                        Assert.Equal("utf8mb4_bin", textDescriptionColumn.Collation);
+
+                        Assert.Equal("longtext", textDependingOnValidJsonCharacteristicsColumn.StoreType);
+                        Assert.Equal("utf8mb4", textDependingOnValidJsonCharacteristicsColumn[MySqlAnnotationNames.CharSet]);
+                        Assert.Equal("utf8mb4_general_ci", textDependingOnValidJsonCharacteristicsColumn.Collation);
+
+                        Assert.Equal("longtext", textCharacteristicsColumn.StoreType);
+                        Assert.Equal("utf8mb4", textCharacteristicsColumn[MySqlAnnotationNames.CharSet]);
+                        Assert.Equal("utf8mb4_general_ci", textCharacteristicsColumn.Collation);
+
+                        Assert.Equal("json", otherJsonCharacteristicsColumn.StoreType);
+                        Assert.Null(otherJsonCharacteristicsColumn[MySqlAnnotationNames.CharSet]);
+                        Assert.Null(otherJsonCharacteristicsColumn.Collation);
+                    },
+                @"
+DROP TABLE IF EXISTS `PlaceDetails`;");
+        }
+
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.DefaultExpression), nameof(ServerVersionSupport.AlternativeDefaultExpression))]
+        public void Create_guid_columns()
+        {
+            Test(
+                @"
+CREATE TABLE `GuidTable`  (
+  `GuidTableId` char(36) NOT NULL DEFAULT (UUID()) PRIMARY KEY,
+  `DefaultUuid` char(36) NOT NULL DEFAULT (UUID())
+);",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                    {
+                        var table = Assert.Single(dbModel.Tables.Where(t => t.Name == "GuidTable"));
+                        var guidTableIdColumn = Assert.Single(table.Columns.Where(c => c.Name == "GuidTableId"));
+                        var defaultUuidColumn = Assert.Single(table.Columns.Where(c => c.Name == "DefaultUuid"));
+
+                        Assert.Equal(ValueGenerated.OnAdd, guidTableIdColumn.ValueGenerated);
+                        Assert.Null(guidTableIdColumn.DefaultValueSql);
+
+                        Assert.Null(defaultUuidColumn.ValueGenerated);
+                        Assert.Equal("uuid()", defaultUuidColumn.DefaultValueSql);
+                    },
+                @"
+DROP TABLE IF EXISTS `GuidTable`;");
+        }
+
+        [ConditionalFact]
+        public void Create_default_value_column()
+        {
+            Test(
+                $@"
+CREATE TABLE `DefaultValueTable` (
+    `DefaultValueInt` int not null default '42',
+    `DefaultValueString` varchar(255) not null default 'Answer to everything',
+    `DefaultValueFunction` datetime not null default CURRENT_TIMESTAMP()
+);",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                    {
+                        var table = Assert.Single(dbModel.Tables.Where(t => t.Name == "DefaultValueTable"));
+                        var defaultValueIntColumn = Assert.Single(table.Columns.Where(c => c.Name == "DefaultValueInt"));
+                        var defaultValueStringColumn = Assert.Single(table.Columns.Where(c => c.Name == "DefaultValueString"));
+                        var defaultValueFunctionColumn = Assert.Single(table.Columns.Where(c => c.Name == "DefaultValueFunction"));
+
+                        Assert.Equal("'42'", defaultValueIntColumn.DefaultValueSql);
+                        Assert.Equal("'Answer to everything'", defaultValueStringColumn.DefaultValueSql);
+                        Assert.Contains("current_timestamp", defaultValueFunctionColumn.DefaultValueSql, StringComparison.OrdinalIgnoreCase);
+                    },
+                @"
+DROP TABLE IF EXISTS `DefaultValueTable`;");
+        }
+
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.AlternativeDefaultExpression))]
+        public void Create_default_value_column_simple_function_expression()
+        {
+            Test(
+                $@"
+CREATE TABLE `DefaultValueSimpleExpressionTable` (
+    `DefaultValueSimpleFunctionExpression` double not null default rand()
+);",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                {
+                    var table = Assert.Single(dbModel.Tables.Where(t => t.Name == "DefaultValueSimpleExpressionTable"));
+                    var defaultValueSimpleFunctionExpressionColumn = table.Columns.SingleOrDefault(c => c.Name == "DefaultValueSimpleFunctionExpression");
+
+                    Assert.Equal("rand()", defaultValueSimpleFunctionExpressionColumn.DefaultValueSql);
+                },
+                @"
+DROP TABLE IF EXISTS `DefaultValueSimpleExpressionTable`;");
+        }
+
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.DefaultExpression), nameof(ServerVersionSupport.AlternativeDefaultExpression))]
+        public void Create_default_value_expression_column()
+        {
+            Test(
+                $@"
+CREATE TABLE `DefaultValueExpressionTable` (
+    `DefaultValueExpression` varchar(255) not null default (CONCAT(CAST(42 as char), ' is the answer to everything')),
+    `DefaultValueExpressionInt` int not null default (42)
+);",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                    {
+                        var table = Assert.Single(dbModel.Tables.Where(t => t.Name == "DefaultValueExpressionTable"));
+                        var defaultValueExpressionColumn = Assert.Single(table.Columns.Where(c => c.Name == "DefaultValueExpression"));
+                        var defaultValueExpressionIntColumn = Assert.Single(table.Columns.Where(c => c.Name == "DefaultValueExpressionInt"));
+
+                        Assert.Contains("CONCAT(CAST(42 as char", defaultValueExpressionColumn.DefaultValueSql, StringComparison.OrdinalIgnoreCase);
+                        Assert.Contains(" is the answer to everything", defaultValueExpressionColumn.DefaultValueSql, StringComparison.OrdinalIgnoreCase);
+
+                        Assert.Equal("'42'", defaultValueExpressionIntColumn.DefaultValueSql);
+                    },
+                @"
+DROP TABLE IF EXISTS `DefaultValueExpressionTable`;");
+        }
+
+        [ConditionalFact]
+        [SupportedServerVersionCondition("10.4.0-mariadb")]
+        public void Create_view_with_column_type_containing_comment_after_cast()
+        {
+            // Any cast (necessary or not) will result in MariaDB adding a comment to the column type
+            // when queried through `INFORMATION_SCHEMA`.`COLUMNS`.
+            Test(
+                @"
+CREATE TABLE `item_data` (
+    `id` INT(11) NOT NULL,
+    `text_datetime` TEXT NOT NULL,
+    `real_datetime_1` DATETIME NOT NULL,
+    `real_datetime_2` DATETIME NOT NULL,
+    PRIMARY KEY (`id`)
+);
+
+CREATE VIEW `item_data_view` AS
+SELECT `item`.`id`,
+       CAST(`item`.`text_datetime` AS DATETIME) AS `text_datetime_converted`,
+	   CAST(`item`.`real_datetime_1` AS DATETIME) AS `real_datetime_1_converted`,
+       `item`.`real_datetime_2` AS `real_datetime_2_original`
+FROM `item_data` `item`;",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                {
+                    var table = Assert.Single(dbModel.Tables.Where(t => t.Name == "item_data_view"));
+                    var textDateTimeConvertedColumn = Assert.Single(table.Columns.Where(c => c.Name == "text_datetime_converted"));
+                    var realDateTime1ConvertedColumn = Assert.Single(table.Columns.Where(c => c.Name == "real_datetime_1_converted"));
+                    var realDateTime2OriginalColumn = Assert.Single(table.Columns.Where(c => c.Name == "real_datetime_2_original"));
+
+                    Assert.Equal("datetime", textDateTimeConvertedColumn.StoreType);
+                    Assert.Equal("datetime", realDateTime1ConvertedColumn.StoreType);
+                    Assert.Equal("datetime", realDateTime2OriginalColumn.StoreType);
+                },
+                @"
+DROP VIEW IF EXISTS `item_data_view`;
+DROP TABLE IF EXISTS `item_data`;");
         }
 
         #endregion
@@ -309,7 +558,7 @@ CREATE TABLE StoreType (
                         Assert.Equal("point", columns.Single(c => c.Name == "PointProperty").StoreType);
                         //Assert.Equal("randomType", columns.Single(c => c.Name == "RandomProperty").StoreType);
                     },
-                @"DROP TABLE StoreType;");
+                @"DROP TABLE IF EXISTS StoreType;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -331,7 +580,7 @@ CREATE TABLE Nullable (
                         Assert.True(columns.Single(c => c.Name == "NullableInt").IsNullable);
                         Assert.False(columns.Single(c => c.Name == "NonNullString").IsNullable);
                     },
-                @"DROP TABLE Nullable;");
+                @"DROP TABLE IF EXISTS Nullable;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -355,7 +604,7 @@ CREATE TABLE DefaultValue (
                         Assert.Equal("3.14", columns.Single(c => c.Name == "RealColumn").DefaultValueSql);
                         Assert.Equal("'October 20, 2015 11am'", columns.Single(c => c.Name == "Created").DefaultValueSql);
                     },
-                @"DROP TABLE DefaultValue;");
+                @"DROP TABLE IF EXISTS DefaultValue;");
         }
 
         [Theory(Skip = "Issue #582")]
@@ -377,10 +626,11 @@ CREATE TABLE DefaultValue (
                     var column = Assert.Single(Assert.Single(dbModel.Tables).Columns);
                     Assert.Null(column.DefaultValueSql);
                 },
-                "DROP TABLE DefaultValueClr");
+                "DROP TABLE IF EXISTS DefaultValueClr");
         }
 
-        [Fact]
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.GeneratedColumns))]
         public void Computed_value_virtual()
             => Test(@"
 CREATE TABLE `ComputedValues` (
@@ -400,9 +650,10 @@ CREATE TABLE `ComputedValues` (
                     Assert.Equal(@"`A` + `B`", column.ComputedColumnSql);
                     Assert.False(column.IsStored);
                 },
-                @"DROP TABLE `ComputedValues`");
+                @"DROP TABLE IF EXISTS `ComputedValues`");
 
-        [Fact]
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.GeneratedColumns))]
         public void Computed_value_stored()
             => Test(@"
 CREATE TABLE `ComputedValues` (
@@ -422,7 +673,30 @@ CREATE TABLE `ComputedValues` (
                     Assert.Equal(@"`A` + `B`", column.ComputedColumnSql);
                     Assert.True(column.IsStored);
                 },
-                @"DROP TABLE `ComputedValues`");
+                @"DROP TABLE IF EXISTS `ComputedValues`");
+
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.GeneratedColumns))]
+        public void Computed_value_virtual_using_constant_string()
+            => Test(@"
+CREATE TABLE `Users` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `FirstName` varchar(150) NOT NULL,
+  `LastName` varchar(150) NOT NULL,
+  `FullName` varchar(301) GENERATED ALWAYS AS (concat(`FirstName`, _utf8mb4' ', `LastName`)) VIRTUAL,
+  PRIMARY KEY (`id`)
+);",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                {
+                    var columns = dbModel.Tables.Single().Columns;
+
+                    var column = columns.Single(c => c.Name == "FullName");
+                    Assert.Equal(@"concat(`FirstName`,_utf8mb4' ',`LastName`)", column.ComputedColumnSql);
+                    Assert.False(column.IsStored);
+                },
+                @"DROP TABLE IF EXISTS `Users`");
 
         [ConditionalFact]
         [SupportedServerVersionCondition(nameof(ServerVersionSupport.AlternativeDefaultExpression))]
@@ -446,7 +720,7 @@ CREATE TABLE `IceCreams` (
                     var column = columns.Single(c => c.Name == "BestServedBefore");
                     Assert.Equal(@"curdate()", column.DefaultValueSql);
                 },
-                @"DROP TABLE `IceCreams`");
+                @"DROP TABLE IF EXISTS `IceCreams`");
         }
 
         #endregion
@@ -472,7 +746,7 @@ CREATE TABLE CompositePrimaryKey (
                         Assert.Equal("CompositePrimaryKey", pk.Table.Name);
                         Assert.Equal(new List<string> { "Id2", "Id1" }, pk.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE CompositePrimaryKey;");
+                @"DROP TABLE IF EXISTS CompositePrimaryKey;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -492,7 +766,7 @@ CREATE TABLE RowidPrimaryKey (
                         Assert.Equal("RowidPrimaryKey", pk.Table.Name);
                         Assert.Equal(new List<string> { "Id" }, pk.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE RowidPrimaryKey;");
+                @"DROP TABLE IF EXISTS RowidPrimaryKey;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -514,7 +788,7 @@ CREATE TABLE PrimaryKeyName (
                     Assert.Equal("PK", pk.Name);
                     Assert.Equal(new List<string> { "Id" }, pk.Columns.Select(ic => ic.Name).ToList());
                 },
-                @"DROP TABLE PrimaryKeyName;");
+                @"DROP TABLE IF EXISTS PrimaryKeyName;");
         }
 
         [Fact]
@@ -524,7 +798,7 @@ CREATE TABLE PrimaryKeyName (
                 @"
 CREATE TABLE `IceCreams` (
     `Brand` longtext NOT NULL,
-    `Name` varchar(255) NOT NULL,
+    `Name` varchar(128) NOT NULL,
     PRIMARY KEY (`Name`, `Brand`(20))
 );",
                 Enumerable.Empty<string>(),
@@ -600,7 +874,7 @@ CREATE TABLE CompositeUniqueConstraint (
                         Assert.Equal("CompositeUniqueConstraint", constraint.Table.Name);
                         Assert.Equal(new List<string> { "Id2", "Id1" }, constraint.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE CompositeUniqueConstraint;");
+                @"DROP TABLE IF EXISTS CompositeUniqueConstraint;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -623,7 +897,7 @@ CREATE TABLE UniqueConstraintName (
                         Assert.Equal("UK", constraint.Name);
                         Assert.Equal(new List<string> { "Id" }, constraint.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE UniqueConstraintName;");
+                @"DROP TABLE IF EXISTS UniqueConstraintName;");
         }
 
         #endregion
@@ -652,7 +926,7 @@ CREATE INDEX IX_COMPOSITE on CompositeIndex (Id2, Id1);",
                         Assert.Equal("IX_COMPOSITE", index.Name);
                         Assert.Equal(new List<string> { "Id2", "Id1" }, index.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE CompositeIndex;");
+                @"DROP TABLE IF EXISTS CompositeIndex;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -678,7 +952,7 @@ CREATE UNIQUE INDEX IX_UNIQUE on UniqueIndex (Id2);",
                         Assert.True(index.IsUnique);
                         Assert.Equal(new List<string> { "Id2" }, index.Columns.Select(ic => ic.Name).ToList());
                     },
-                @"DROP TABLE UniqueIndex;");
+                @"DROP TABLE IF EXISTS UniqueIndex;");
         }
 
         [Fact]
@@ -689,7 +963,7 @@ CREATE UNIQUE INDEX IX_UNIQUE on UniqueIndex (Id2);",
 CREATE TABLE `IceCreams` (
     `IceCreamId` int NOT NULL,
     `Brand` longtext NOT NULL,
-    `Name` varchar(255) NOT NULL,
+    `Name` varchar(128) NOT NULL,
     PRIMARY KEY (`IceCreamId`)
 );
 
@@ -718,8 +992,8 @@ CREATE INDEX `IX_IceCreams_Brand_Name` ON `IceCreams` (`Name`, `Brand`(20));
                 @"
 CREATE TABLE `IceCreams` (
     `IceCreamId` int NOT NULL,
-    `Brand` varchar(255) NOT NULL,
-    `Name` varchar(255) NOT NULL,
+    `Brand` varchar(128) NOT NULL,
+    `Name` varchar(128) NOT NULL,
     PRIMARY KEY (`IceCreamId`)
 );
 
@@ -750,8 +1024,8 @@ CREATE UNIQUE INDEX `IX_IceCreams_Brand_Name_2` ON `IceCreams` (`Brand`(40), `Na
                 @"
 CREATE TABLE `IceCreams` (
     `IceCreamId` int NOT NULL,
-    `Brand` varchar(255) NOT NULL,
-    `Name` varchar(255) NOT NULL,
+    `Brand` varchar(128) NOT NULL,
+    `Name` varchar(128) NOT NULL,
     PRIMARY KEY (`IceCreamId`)
 );
 
@@ -801,14 +1075,43 @@ CREATE FULLTEXT INDEX `IX_IceCreams_Name` ON `IceCreams` (`Name`);",
                 @"DROP TABLE IF EXISTS `IceCreams`;");
         }
 
-        [Fact]
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.FullTextParser))]
+        public void Set_fulltextparser_for_fulltext_index_with_parser()
+        {
+            Test(
+                @"
+CREATE TABLE `IceCreams` (
+    `IceCreamId` int NOT NULL,
+    `Name` varchar(255) NOT NULL,
+    PRIMARY KEY (`IceCreamId`)
+);
+
+CREATE FULLTEXT INDEX `IX_IceCreams_Name` ON `IceCreams` (`Name`) /*!50703 WITH PARSER `ngram` */;",
+                Enumerable.Empty<string>(),
+                Enumerable.Empty<string>(),
+                dbModel =>
+                {
+                    var index = Assert.Single(dbModel.Tables.Single().Indexes);
+
+                    Assert.Equal("IceCreams", index.Table.Name, StringComparer.OrdinalIgnoreCase);
+                    Assert.Equal(1, index.Columns.Count);
+                    Assert.Equal("Name", index.Columns[0].Name, StringComparer.OrdinalIgnoreCase);
+                    Assert.Equal(true, index.FindAnnotation(MySqlAnnotationNames.FullTextIndex)?.Value);
+                    Assert.Equal("ngram", index.FindAnnotation(MySqlAnnotationNames.FullTextParser)?.Value);
+                },
+                @"DROP TABLE IF EXISTS `IceCreams`;");
+        }
+
+        [ConditionalFact]
+        [SupportedServerVersionCondition(nameof(ServerVersionSupport.SpatialIndexes))]
         public void Set_spatial_for_spatial_index()
         {
             Test(
                 @"
 CREATE TABLE `IceCreamShop` (
     `IceCreamShopId` int NOT NULL,
-    `Location` geometry NOT NULL /*!80003 SRID 0 */,
+    `Location` geometry NOT NULL,
     PRIMARY KEY (`IceCreamShopId`)
 );
 
@@ -862,8 +1165,8 @@ CREATE TABLE DependentTable (
                         Assert.Equal(ReferentialAction.Cascade, fk.OnDelete);
                     },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -913,9 +1216,9 @@ CREATE TABLE DependentTable (
                         Assert.Equal(ReferentialAction.Cascade, anotherPrincipalFk.OnDelete);
                     },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE AnotherPrincipalTable;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS AnotherPrincipalTable;
+DROP TABLE IF EXISTS PrincipalTable;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -947,8 +1250,8 @@ CREATE TABLE DependentTable (
                         Assert.Equal(ReferentialAction.Cascade, fk.OnDelete);
                     },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -980,8 +1283,8 @@ CREATE TABLE DependentTable (
                         Assert.Equal("MYFK", fk.Name);
                     },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -1012,8 +1315,8 @@ CREATE TABLE DependentTable (
                         Assert.Equal(ReferentialAction.SetNull, fk.OnDelete);
                     },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;");
         }
 
         [Fact]
@@ -1053,8 +1356,8 @@ DEALLOCATE PREPARE dynamic_statement;",
                     Assert.Contains(dependent.ForeignKeys, t => t.PrincipalTable.Name == principal.Name);
                 },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE PrincipalTable;"
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;"
             );
         }
 
@@ -1073,7 +1376,7 @@ DROP TABLE PrincipalTable;"
                     {
                         var (Level, Id, Message) = Assert.Single(Log.Where(t => t.Level == LogLevel.Warning));
                     },
-                @"DROP TABLE Everest;");
+                @"DROP TABLE IF EXISTS Everest;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -1089,7 +1392,7 @@ DROP TABLE PrincipalTable;"
 
                         var (Level, Id, Message) = Assert.Single(Log.Where(t => t.Level == LogLevel.Warning));
                     },
-                @"DROP TABLE Blank;");
+                @"DROP TABLE IF EXISTS Blank;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -1113,8 +1416,8 @@ CREATE TABLE DependentTable (
                         var (Level, Id, Message) = Assert.Single(Log.Where(t => t.Level == LogLevel.Warning));
                     },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;");
         }
 
         [Fact(Skip = "Issue #582")]
@@ -1138,8 +1441,8 @@ CREATE TABLE DependentTable (
                         var (Level, Id, Message) = Assert.Single(Log.Where(t => t.Level == LogLevel.Warning));
                     },
                 @"
-DROP TABLE DependentTable;
-DROP TABLE PrincipalTable;");
+DROP TABLE IF EXISTS DependentTable;
+DROP TABLE IF EXISTS PrincipalTable;");
         }
 
         #endregion

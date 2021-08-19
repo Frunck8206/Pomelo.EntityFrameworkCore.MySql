@@ -1,6 +1,7 @@
 using Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.DependencyInjection;
@@ -76,7 +77,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 
             var storeType = property.GetRelationalTypeMapping().StoreType;
 
-            Assert.Equal("varchar(64) CHARACTER SET utf8mb4", storeType);
+            Assert.Equal("varchar(64)", storeType);
 
             return modelBuilder;
         }
@@ -109,12 +110,12 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
             base.ConcurrencyCheckAttribute_throws_if_value_in_database_changed();
 
             AssertSql(
-                @"SELECT `s`.`Unique_No`, `s`.`MaxLengthProperty`, `s`.`Name`, `s`.`RowVersion`, `s`.`AdditionalDetails_Name`, `s`.`Details_Name`
+                @"SELECT `s`.`Unique_No`, `s`.`MaxLengthProperty`, `s`.`Name`, `s`.`RowVersion`, `s`.`AdditionalDetails_Name`, `s`.`AdditionalDetails_Value`, `s`.`Details_Name`, `s`.`Details_Value`
 FROM `Sample` AS `s`
 WHERE `s`.`Unique_No` = 1
 LIMIT 1",
                 //
-                @"SELECT `s`.`Unique_No`, `s`.`MaxLengthProperty`, `s`.`Name`, `s`.`RowVersion`, `s`.`AdditionalDetails_Name`, `s`.`Details_Name`
+                @"SELECT `s`.`Unique_No`, `s`.`MaxLengthProperty`, `s`.`Name`, `s`.`RowVersion`, `s`.`AdditionalDetails_Name`, `s`.`AdditionalDetails_Value`, `s`.`Details_Name`, `s`.`Details_Value`
 FROM `Sample` AS `s`
 WHERE `s`.`Unique_No` = 1
 LIMIT 1",
@@ -147,14 +148,103 @@ SELECT ROW_COUNT();");
 @p1='Third' (Nullable = false) (Size = 4000)
 @p2='00000000-0000-0000-0000-000000000003'
 @p3='Third Additional Name' (Size = 4000)
-@p4='Third Name' (Size = 4000)
+@p4='0' (Nullable = true)
+@p5='Third Name' (Size = 4000)
+@p6='0' (Nullable = true)
 
-INSERT INTO `Sample` (`MaxLengthProperty`, `Name`, `RowVersion`, `AdditionalDetails_Name`, `Details_Name`)
-VALUES (@p0, @p1, @p2, @p3, @p4);
+INSERT INTO `Sample` (`MaxLengthProperty`, `Name`, `RowVersion`, `AdditionalDetails_Name`, `AdditionalDetails_Value`, `Details_Name`, `Details_Value`)
+VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6);
 SELECT `Unique_No`
 FROM `Sample`
 WHERE ROW_COUNT() = 1 AND `Unique_No` = LAST_INSERT_ID();");
         }
+
+        [ConditionalFact]
+        public virtual ModelBuilder CharSet_attribute_is_applied_to_column()
+        {
+            var modelBuilder = CreateModelBuilder();
+
+            modelBuilder.Entity<ColumnWithCharSet>();
+
+            Validate(modelBuilder);
+
+            Assert.Equal("latin1", GetProperty<ColumnWithCharSet>(modelBuilder, "PersonFirstName").GetCharSet());
+
+            return modelBuilder;
+        }
+
+        protected class ColumnWithCharSet
+        {
+            public int Id { get; set; }
+
+            [MySqlCharSet("latin1")]
+            public string PersonFirstName { get; set; }
+        }
+
+        [ConditionalFact]
+        public virtual ModelBuilder CharSet_attribute_is_applied_to_table()
+        {
+            var modelBuilder = CreateModelBuilder();
+
+            modelBuilder.Entity<TableWithCharSet>();
+
+            Validate(modelBuilder);
+
+            Assert.Equal("latin1", GetEntityType<TableWithCharSet>(modelBuilder).GetCharSet());
+
+            return modelBuilder;
+        }
+
+        [MySqlCharSet("latin1")]
+        protected class TableWithCharSet
+        {
+            public int Id { get; set; }
+        }
+
+        [ConditionalFact]
+        public virtual ModelBuilder Collation_attribute_is_applied_to_column()
+        {
+            var modelBuilder = CreateModelBuilder();
+
+            modelBuilder.Entity<ColumnWithCollation>();
+
+            Validate(modelBuilder);
+
+            Assert.Equal("latin1_bin", GetProperty<ColumnWithCollation>(modelBuilder, "PersonFirstName").GetCollation());
+
+            return modelBuilder;
+        }
+
+        protected class ColumnWithCollation
+        {
+            public int Id { get; set; }
+
+            [MySqlCollation("latin1_bin")]
+            public string PersonFirstName { get; set; }
+        }
+
+        [ConditionalFact]
+        public virtual ModelBuilder Collation_attribute_is_applied_to_table()
+        {
+            var modelBuilder = CreateModelBuilder();
+
+            modelBuilder.Entity<TableWithCollation>();
+
+            Validate(modelBuilder);
+
+            Assert.Equal("latin1_bin", GetEntityType<TableWithCollation>(modelBuilder).GetCollation());
+
+            return modelBuilder;
+        }
+
+        [MySqlCollation("latin1_bin")]
+        protected class TableWithCollation
+        {
+            public int Id { get; set; }
+        }
+
+        protected static IMutableEntityType GetEntityType<TEntity>(ModelBuilder modelBuilder)
+            => modelBuilder.Model.FindEntityType(typeof(TEntity));
 
         private void AssertSql(params string[] expected)
             => Fixture.TestSqlLoggerFactory.AssertBaseline(expected);

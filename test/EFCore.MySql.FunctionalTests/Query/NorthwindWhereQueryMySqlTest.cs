@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore.Query;
@@ -205,16 +206,6 @@ FROM `Customers` AS `c`
 WHERE SUBSTRING(`c`.`City`, 1 + 1, 2) = 'ea'");
         }
 
-        [ConditionalTheory]
-        public override Task Where_equals_method_string_with_ignore_case(bool async)
-        {
-            // We have an implementation for this and therefore don't throw.
-            return AssertQuery(
-                async,
-                ss => ss.Set<Customer>().Where(c => c.City.Equals("London", StringComparison.OrdinalIgnoreCase)),
-                entryCount: 6);
-        }
-
         [ConditionalTheory(Skip = "issue #573")]
         public override Task Where_as_queryable_expression(bool async)
         {
@@ -231,6 +222,352 @@ WHERE SUBSTRING(`c`.`City`, 1 + 1, 2) = 'ea'");
         public override Task Where_multiple_contains_in_subquery_with_or(bool async)
         {
             return base.Where_multiple_contains_in_subquery_with_or(async);
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_remove(bool async)
+        {
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => c.City.Remove(3) == "Sea"),
+                entryCount: 1);
+
+            AssertSql(
+                @"SELECT `c`.`CustomerID`, `c`.`Address`, `c`.`City`, `c`.`CompanyName`, `c`.`ContactName`, `c`.`ContactTitle`, `c`.`Country`, `c`.`Fax`, `c`.`Phone`, `c`.`PostalCode`, `c`.`Region`
+FROM `Customers` AS `c`
+WHERE SUBSTRING(`c`.`City`, 1, 3) = 'Sea'");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_remove_count(bool async)
+        {
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => c.City.Remove(3, 1) == "Seatle"),
+                entryCount: 1);
+
+            AssertSql(
+                @"SELECT `c`.`CustomerID`, `c`.`Address`, `c`.`City`, `c`.`CompanyName`, `c`.`ContactName`, `c`.`ContactTitle`, `c`.`Country`, `c`.`Fax`, `c`.`Phone`, `c`.`PostalCode`, `c`.`Region`
+FROM `Customers` AS `c`
+WHERE CONCAT(SUBSTRING(`c`.`City`, 1, 3), SUBSTRING(`c`.`City`, (3 + 1) + 1, CHAR_LENGTH(`c`.`City`) - (3 + 1))) = 'Seatle'");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_guid(bool async)
+        {
+            var guidParameter = new Guid("4D68FE70-DDB0-47D7-B6DB-437684FA3E1F");
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => guidParameter == Guid.NewGuid()),
+                entryCount: 0);
+
+            AssertSql(
+                @"@__guidParameter_0='4d68fe70-ddb0-47d7-b6db-437684fa3e1f'
+
+SELECT `c`.`CustomerID`, `c`.`Address`, `c`.`City`, `c`.`CompanyName`, `c`.`ContactName`, `c`.`ContactTitle`, `c`.`Country`, `c`.`Fax`, `c`.`Phone`, `c`.`PostalCode`, `c`.`Region`
+FROM `Customers` AS `c`
+WHERE @__guidParameter_0 = UUID()");
+        }
+
+        public override async Task Where_string_concat_method_comparison_2(bool async)
+        {
+            await base.Where_string_concat_method_comparison_2(async);
+
+            AssertSql(
+                @"@__i_0='A' (Size = 4000)
+@__j_1='B' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE CONCAT(@__i_0, @__j_1, `c`.`CustomerID`) = `c`.`CompanyName`");
+        }
+
+        public override async Task Where_string_concat_method_comparison_3(bool async)
+        {
+            await base.Where_string_concat_method_comparison_3(async);
+
+            AssertSql(
+                @"@__i_0='A' (Size = 4000)
+@__j_1='B' (Size = 4000)
+@__k_2='C' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE CONCAT(@__i_0, @__j_1, @__k_2, `c`.`CustomerID`) = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_single_object(bool async)
+        {
+            object i = 1;
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(i) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='1' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_object(bool async)
+        {
+            object i = 1;
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(i, c.CustomerID) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__i_0='1' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE CONCAT(@__i_0, `c`.`CustomerID`) = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_object_2(bool async)
+        {
+            object i = 1;
+            object j = 2;
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(i, j, c.CustomerID) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__i_0='1' (Size = 4000)
+@__j_1='2' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE CONCAT(@__i_0, @__j_1, `c`.`CustomerID`) = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_object_3(bool async)
+        {
+            object i = 1;
+            object j = 2;
+            object k = 3;
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(i, j, k, c.CustomerID) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__i_0='1' (Size = 4000)
+@__j_1='2' (Size = 4000)
+@__k_2='3' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE (CONCAT(@__i_0, @__j_1, @__k_2, `c`.`CustomerID`) = `c`.`CompanyName`) OR (CONCAT(@__i_0, @__j_1, @__k_2, `c`.`CustomerID`) IS NULL AND (`c`.`CompanyName` IS NULL))");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_params_string_array(bool async)
+        {
+            var i = "A";
+            var j = "B";
+            var k = "C";
+            var m = "D";
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(i, j, k, m, c.CustomerID) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__i_0='A' (Size = 4000)
+@__j_1='B' (Size = 4000)
+@__k_2='C' (Size = 4000)
+@__m_3='D' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE (CONCAT(@__i_0, @__j_1, @__k_2, @__m_3, `c`.`CustomerID`) = `c`.`CompanyName`) OR (CONCAT(@__i_0, @__j_1, @__k_2, @__m_3, `c`.`CustomerID`) IS NULL AND (`c`.`CompanyName` IS NULL))");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_explicit_string_array(bool async)
+        {
+            var array = new[] {"A", "B", "C", "D"};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(array) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='ABCD' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_explicit_string_array_single_element(bool async)
+        {
+            var array = new[] {"A"};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(array) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='A' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_params_object_array(bool async)
+        {
+            object i = 1;
+            object j = 2;
+            object k = 3;
+            object m = 4;
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(i, j, k, m, c.CustomerID) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__i_0='1' (Size = 4000)
+@__j_1='2' (Size = 4000)
+@__k_2='3' (Size = 4000)
+@__m_3='4' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE (CONCAT(@__i_0, @__j_1, @__k_2, @__m_3, `c`.`CustomerID`) = `c`.`CompanyName`) OR (CONCAT(@__i_0, @__j_1, @__k_2, @__m_3, `c`.`CustomerID`) IS NULL AND (`c`.`CompanyName` IS NULL))");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_explicit_object_array(bool async)
+        {
+            var array = new object[] {1, 2, 3, 4};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(array) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='1234' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_explicit_object_array_single_element(bool async)
+        {
+            var array = new object[] {1};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(array) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='1' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_string_enumerable(bool async)
+        {
+            IEnumerable<string> enumerable = new[] {"A", "B", "C", "D"};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(enumerable) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='ABCD' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_string_enumerable_single_element(bool async)
+        {
+            IEnumerable<string> enumerable = new[] {"A"};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(enumerable) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='A' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_generic_enumerable(bool async)
+        {
+            IEnumerable<int> enumerable = new[] {1, 2, 3, 4};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(enumerable) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='1234' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public virtual async Task Where_string_concat_method_comparison_generic_enumerable_single_element(bool async)
+        {
+            IEnumerable<int> enumerable = new[] {1};
+
+            await AssertQuery(
+                async,
+                ss => ss.Set<Customer>().Where(c => string.Concat(enumerable) == c.CompanyName).Select(c => c.CustomerID));
+
+            AssertSql(
+                @"@__Concat_0='1' (Size = 4000)
+
+SELECT `c`.`CustomerID`
+FROM `Customers` AS `c`
+WHERE @__Concat_0 = `c`.`CompanyName`");
         }
 
         private void AssertSql(params string[] expected)

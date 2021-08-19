@@ -12,12 +12,15 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Pomelo.EntityFrameworkCore.MySql.Tests;
+using Pomelo.EntityFrameworkCore.MySql.Tests.TestUtilities.Attributes;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 {
+    [SupportedServerVersionCondition(nameof(ServerVersionSupport.Json))]
     public class BuiltInDataTypesMySqlTest :
         BuiltInDataTypesTestBase<BuiltInDataTypesMySqlTest.BuiltInDataTypesMySqlFixture>
     {
@@ -103,7 +106,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Assert.Equal(
                     @"SELECT `m`.`Int`
 FROM `MappedNullableDataTypes` AS `m`
-WHERE `m`.`TimeSpanAsTime` = '00:01:02'",
+WHERE `m`.`TimeSpanAsTime` = TIME '00:01:02'",
                     Sql,
                     ignoreLineEndingDifferences: true);
             }
@@ -1137,7 +1140,7 @@ MappedDataTypes.StringAsJson ---> [{(AppConfig.ServerVersion.Supports.JsonDataTy
 MappedDataTypes.StringAsLongtext ---> [longtext] [MaxLength = -1]
 MappedDataTypes.StringAsMediumtext ---> [mediumtext] [MaxLength = 16777215]
 MappedDataTypes.StringAsNChar ---> [char] [MaxLength = 10]
-MappedDataTypes.StringAsNtext ---> [text] [MaxLength = 32767]
+MappedDataTypes.StringAsNtext ---> [text] [MaxLength = 65535]
 MappedDataTypes.StringAsNvarchar ---> [varchar] [MaxLength = 4001]
 MappedDataTypes.StringAsText ---> [text] [MaxLength = 65535]
 MappedDataTypes.StringAsTinytext ---> [tinytext] [MaxLength = 255]
@@ -1179,12 +1182,12 @@ MappedNullableDataTypes.SbyteAsTinyint ---> [nullable tinyint] [Precision = 3 Sc
 MappedNullableDataTypes.ShortAsSmallint ---> [nullable smallint] [Precision = 5 Scale = 0]
 MappedNullableDataTypes.StringAsChar ---> [nullable char] [MaxLength = 20]
 MappedNullableDataTypes.StringAsJson ---> [nullable {(AppConfig.ServerVersion.Supports.JsonDataTypeEmulation ? "longtext] [MaxLength = -1" : "json")}]
-MappedNullableDataTypes.StringAsMediumtext ---> [nullable mediumtext] [MaxLength = 8388607]
+MappedNullableDataTypes.StringAsMediumtext ---> [nullable mediumtext] [MaxLength = 16777215]
 MappedNullableDataTypes.StringAsNChar ---> [nullable char] [MaxLength = 20]
 MappedNullableDataTypes.StringAsNtext ---> [nullable text] [MaxLength = 65535]
 MappedNullableDataTypes.StringAsNvarchar ---> [nullable varchar] [MaxLength = 55]
 MappedNullableDataTypes.StringAsText ---> [nullable tinytext] [MaxLength = 255]
-MappedNullableDataTypes.StringAsTinytext ---> [nullable tinytext] [MaxLength = 127]
+MappedNullableDataTypes.StringAsTinytext ---> [nullable tinytext] [MaxLength = 255]
 MappedNullableDataTypes.StringAsVarchar ---> [nullable varchar] [MaxLength = 55]
 MappedNullableDataTypes.TimeSpanAsTime ---> [nullable time] [Precision = 3]
 MappedNullableDataTypes.UintAsBigint ---> [nullable bigint] [Precision = 19 Scale = 0]
@@ -1198,7 +1201,7 @@ MaxLengthDataTypes.ByteArray5 ---> [nullable varbinary] [MaxLength = 5]
 MaxLengthDataTypes.ByteArray9000 ---> [nullable longblob] [MaxLength = -1]
 MaxLengthDataTypes.Id ---> [int] [Precision = 10 Scale = 0]
 MaxLengthDataTypes.String3 ---> [nullable varchar] [MaxLength = 3]
-MaxLengthDataTypes.String9000 ---> [nullable longtext] [MaxLength = -1]
+MaxLengthDataTypes.String9000 ---> [nullable varchar] [MaxLength = 9000]
 NonNullableBackedDataTypes.Boolean ---> [nullable tinyint] [Precision = 3 Scale = 0]
 NonNullableBackedDataTypes.Byte ---> [nullable tinyint] [Precision = 3 Scale = 0]
 NonNullableBackedDataTypes.Character ---> [nullable varchar] [MaxLength = 1]
@@ -1279,13 +1282,15 @@ ObjectBackedDataTypes.TimeSpan ---> [time] [Precision = 6]
 ObjectBackedDataTypes.UnsignedInt16 ---> [smallint] [Precision = 5 Scale = 0]
 ObjectBackedDataTypes.UnsignedInt32 ---> [int] [Precision = 10 Scale = 0]
 ObjectBackedDataTypes.UnsignedInt64 ---> [bigint] [Precision = 20 Scale = 0]
+StringEnclosure.Id ---> [int] [Precision = 10 Scale = 0]
+StringEnclosure.Value ---> [nullable longtext] [MaxLength = -1]
 StringForeignKeyDataType.Id ---> [int] [Precision = 10 Scale = 0]
 StringForeignKeyDataType.StringKeyDataTypeId ---> [nullable varchar] [MaxLength = 255]
 StringKeyDataType.Id ---> [varchar] [MaxLength = 255]
 UnicodeDataTypes.Id ---> [int] [Precision = 10 Scale = 0]
 UnicodeDataTypes.StringAnsi ---> [nullable longtext] [MaxLength = -1]
 UnicodeDataTypes.StringAnsi3 ---> [nullable varchar] [MaxLength = 3]
-UnicodeDataTypes.StringAnsi9000 ---> [nullable longtext] [MaxLength = -1]
+UnicodeDataTypes.StringAnsi9000 ---> [nullable varchar] [MaxLength = 9000]
 UnicodeDataTypes.StringDefault ---> [nullable longtext] [MaxLength = -1]
 UnicodeDataTypes.StringUnicode ---> [nullable longtext] [MaxLength = -1]
 ";

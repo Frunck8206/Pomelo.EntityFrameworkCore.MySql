@@ -8,6 +8,10 @@ using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 // ReSharper disable once CheckNamespace
 namespace Microsoft.EntityFrameworkCore
 {
+    /// <summary>
+    /// Represents a <see cref="ServerVersion"/> for MariaDB database servers.
+    /// For MySQL database servers, use <see cref="MySqlServerVersion"/> instead.
+    /// </summary>
     public class MariaDbServerVersion : ServerVersion
     {
         public static readonly string MariaDbTypeIdentifier = nameof(ServerType.MariaDb).ToLowerInvariant();
@@ -22,7 +26,7 @@ namespace Microsoft.EntityFrameworkCore
         }
 
         public MariaDbServerVersion(string versionString)
-            : this(FromString(versionString, ServerType.MariaDb))
+            : this(Parse(versionString, ServerType.MariaDb))
         {
         }
 
@@ -63,6 +67,7 @@ namespace Microsoft.EntityFrameworkCore
             public override bool DefaultCharSetUtf8Mb4 => false;
             public override bool DefaultExpression => false;
             public override bool AlternativeDefaultExpression => ServerVersion.Version >= new Version(10, 2, 7);
+            public override bool SpatialIndexes => ServerVersion.Version >= new Version(10, 2, 2);
             public override bool SpatialReferenceSystemRestrictedColumns => false;
             public override bool SpatialFunctionAdditions => ServerVersion.Version >= new Version(10, 1, 2);
             public override bool SpatialSupportFunctionAdditions => false;
@@ -74,6 +79,9 @@ namespace Microsoft.EntityFrameworkCore
             public override bool JsonDataTypeEmulation => ServerVersion.Version >= new Version(10, 2, 4); // JSON_COMPACT was added in 10.2.4, though most other functions where added in 10.2.3
             public override bool ImplicitBoolCheckUsesIndex => ServerVersion.Version >= new Version(10, 0, 0); // Exact version has not been verified yet
             public override bool Sequences => ServerVersion.Version >= new Version(10, 3, 0);
+            public override bool InformationSchemaCheckConstraintsTable => ServerVersion.Version >= new Version(10, 3, 10) ||
+                                                                           ServerVersion.Version.Major == 10 && ServerVersion.Version.Minor == 2 && ServerVersion.Version.Build >= 22;  // MySQL is missing the explicit TABLE_NAME column that MariaDB supports, so always join the TABLE_CONSTRAINTS table when accessing CHECK_CONSTRAINTS for any database server that supports CHECK_CONSTRAINTS.
+            public override bool IdentifyJsonColumsByCheckConstraints => true;
         }
     }
 }

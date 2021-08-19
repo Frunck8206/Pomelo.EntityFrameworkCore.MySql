@@ -11,7 +11,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Update;
 using Microsoft.EntityFrameworkCore.Utilities;
-using Pomelo.EntityFrameworkCore.MySql.Extensions;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Update.Internal
 {
@@ -41,11 +40,13 @@ namespace Pomelo.EntityFrameworkCore.MySql.Update.Internal
             IReadOnlyList<ModificationCommand> modificationCommands,
             int commandPosition)
         {
+            var table = StoreObjectIdentifier.Table(modificationCommands[0].TableName, modificationCommands[0].Schema);
+
             if (modificationCommands.Count == 1
                 && modificationCommands[0].ColumnModifications.All(o =>
                     !o.IsKey
                     || !o.IsRead
-                    || o.Property?.GetValueGenerationStrategy() == MySqlValueGenerationStrategy.IdentityColumn))
+                    || o.Property?.GetValueGenerationStrategy(table) == MySqlValueGenerationStrategy.IdentityColumn))
             {
                 return AppendInsertOperation(commandStringBuilder, modificationCommands[0], commandPosition);
             }
@@ -54,11 +55,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.Update.Internal
             var writeOperations = modificationCommands[0].ColumnModifications.Where(o => o.IsWrite).ToList();
             var keyOperations = modificationCommands[0].ColumnModifications.Where(o => o.IsKey).ToList();
 
-            var defaultValuesOnly = writeOperations.Count == 0;
             var nonIdentityOperations = modificationCommands[0].ColumnModifications
-                .Where(o => o.Property?.GetValueGenerationStrategy() != MySqlValueGenerationStrategy.IdentityColumn)
+                .Where(o => o.Property?.GetValueGenerationStrategy(table) != MySqlValueGenerationStrategy.IdentityColumn)
                 .ToList();
 
+            var defaultValuesOnly = writeOperations.Count == 0;
             if (defaultValuesOnly)
             {
                 if (nonIdentityOperations.Count == 0
@@ -171,10 +172,33 @@ namespace Pomelo.EntityFrameworkCore.MySql.Update.Internal
             return ResultSetMapping.LastInResultSet;
         }
 
-        public override void AppendBatchHeader(StringBuilder commandStringBuilder)
+        protected override void AppendWhereAffectedClause(
+            [NotNull] StringBuilder commandStringBuilder,
+            [NotNull] IReadOnlyList<ColumnModification> operations)
         {
-            // TODO: what is the effect of this statment?
-            // there is no equivalent in mysql: https://stackoverflow.com/questions/3386217/is-there-an-equivalent-to-sql-servers-set-nocount-in-mysql
+            Check.NotNull(commandStringBuilder, nameof(commandStringBuilder));
+            Check.NotNull(operations, nameof(operations));
+
+            // If a compound key consists of an auto_increment column and a database generated column (e.g. a DEFAULT
+            // value), then we only want to filter by `LAST_INSERT_ID()`, because we can't know what the other generated
+            // values are.
+            // Therefore, we filter out the key columns that are marked as `read`, but are not an auto_increment column,
+            // so that `AppendIdentityWhereCondition()` can safely called for the remaining auto_increment column.
+            // Because we currently use `MySqlValueGenerationStrategy.IdentityColumn` for auto_increment columns as well
+            // as CURRENT_TIMESTAMP columns, we need to use `MySqlPropertyExtensions.IsCompatibleAutoIncrementColumn()`
+            // to ensure, that the column is actually an auto_increment column.
+            // See https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql/issues/1300
+            var nonDefaultOperations = operations
+                .Where(
+                    o => !o.IsKey ||
+                         !o.IsRead ||
+                         o.Property == null ||
+                         !o.Property.ValueGenerated.HasFlag(ValueGenerated.OnAdd) ||
+                         MySqlPropertyExtensions.IsCompatibleAutoIncrementColumn(o.Property))
+                .ToList()
+                .AsReadOnly();
+
+            base.AppendWhereAffectedClause(commandStringBuilder, nonDefaultOperations);
         }
 
         protected override void AppendIdentityWhereCondition(StringBuilder commandStringBuilder, ColumnModification columnModification)

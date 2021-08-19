@@ -1,7 +1,9 @@
 using System;
 using Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.TestUtilities;
+using Xunit;
 
 namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 {
@@ -10,6 +12,13 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
         public CustomConvertersMySqlTest(CustomConvertersMySqlFixture fixture)
             : base(fixture)
         {
+        }
+
+        public override void Value_conversion_on_enum_collection_contains()
+        {
+            Assert.Contains(
+                CoreStrings.TranslationFailed("").Substring(47),
+                Assert.Throws<InvalidOperationException>(() => base.Value_conversion_on_enum_collection_contains()).Message);
         }
 
         public class CustomConvertersMySqlFixture : CustomConvertersFixtureBase
@@ -29,6 +38,21 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
             public override DateTime DefaultDateTime => new DateTime();
 
             public override bool SupportsDecimalComparisons => false;
+
+            protected override void OnModelCreating(ModelBuilder modelBuilder, DbContext context)
+            {
+                base.OnModelCreating(modelBuilder, context);
+
+                var ciCollation = ((MySqlTestStore)TestStore).GetCaseInsensitiveUtf8Mb4Collation();
+
+                // Needed to make Can_insert_and_read_back_with_case_insensitive_string_key() work.
+                modelBuilder.Entity<StringForeignKeyDataType>()
+                    .Property(e => e.StringKeyDataTypeId)
+                    .UseCollation(ciCollation);
+                modelBuilder.Entity<StringKeyDataType>()
+                    .Property(e => e.Id)
+                    .UseCollation(ciCollation);
+            }
         }
     }
 }

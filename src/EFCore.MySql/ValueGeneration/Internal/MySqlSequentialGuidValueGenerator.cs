@@ -10,9 +10,8 @@ using MySqlConnector;
 
 namespace Pomelo.EntityFrameworkCore.MySql.ValueGeneration.Internal
 {
-    public class MySqlSequentialGuidValueGenerator  : ValueGenerator<Guid>
+    public class MySqlSequentialGuidValueGenerator : ValueGenerator<Guid>
     {
-
         private readonly IMySqlOptions _options;
 
         public MySqlSequentialGuidValueGenerator(IMySqlOptions options)
@@ -35,12 +34,12 @@ namespace Pomelo.EntityFrameworkCore.MySql.ValueGeneration.Internal
             return Next();
         }
 
-        public Guid Next()
+        public virtual Guid Next()
         {
             return Next(DateTimeOffset.UtcNow);
         }
 
-        public Guid Next(DateTimeOffset timeNow)
+        public virtual Guid Next(DateTimeOffset timeNow)
         {
             // According to RFC 4122:
             // dddddddd-dddd-Mddd-Ndrr-rrrrrrrrrrrr
@@ -95,6 +94,5 @@ namespace Pomelo.EntityFrameworkCore.MySql.ValueGeneration.Internal
         ///     always returns false, meaning the generated values will be saved to the database.
         /// </summary>
         public override bool GeneratesTemporaryValues => false;
-
     }
 }

@@ -44,7 +44,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
     public abstract class MySqlJsonTypeMapping : MySqlStringTypeMapping
     {
         [NotNull]
-        protected IMySqlOptions Options { get; }
+        protected virtual IMySqlOptions Options { get; }
 
         public MySqlJsonTypeMapping(
             [NotNull] string storeType,
@@ -62,6 +62,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
                     unicode: true),
                 MySqlDbType.JSON,
                 options,
+                false,
                 false)
         {
             if (storeType != "json")
@@ -76,7 +77,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
             RelationalTypeMappingParameters parameters,
             MySqlDbType mySqlDbType,
             IMySqlOptions options)
-            : base(parameters, mySqlDbType, options, false)
+            : base(parameters, mySqlDbType, options, false, false)
         {
             Options = options;
         }

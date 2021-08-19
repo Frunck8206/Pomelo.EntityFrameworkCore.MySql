@@ -8,10 +8,8 @@ using System.Linq;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
-using Pomelo.EntityFrameworkCore.MySql.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
@@ -99,17 +97,6 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
         private Dictionary<Type, RelationalTypeMapping> _clrTypeMappings;
         private Dictionary<Type, RelationalTypeMapping> _scaffoldingClrTypeMappings;
 
-        // These are disallowed only if specified without any kind of length specified in parenthesis.
-        private readonly HashSet<string> _disallowedMappings = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "binary",
-            "char",
-            "nchar",
-            "varbinary",
-            "varchar",
-            "nvarchar"
-        };
-
         private readonly IMySqlOptions _options;
 
         private bool _initialized;
@@ -130,17 +117,17 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
             // String mappings depend on the MySqlOptions.NoBackslashEscapes setting:
             //
 
-            _charUnicode = new MySqlStringTypeMapping("char", _options, fixedLength: true);
-            _varcharUnicode = new MySqlStringTypeMapping("varchar", _options);
-            _tinytextUnicode = new MySqlStringTypeMapping("tinytext", _options);
-            _textUnicode = new MySqlStringTypeMapping("text", _options);
-            _mediumtextUnicode = new MySqlStringTypeMapping("mediumtext", _options);
-            _longtextUnicode = new MySqlStringTypeMapping("longtext", _options);
+            _charUnicode = new MySqlStringTypeMapping("char", _options, StoreTypePostfix.Size, fixedLength: true);
+            _varcharUnicode = new MySqlStringTypeMapping("varchar", _options, StoreTypePostfix.Size);
+            _tinytextUnicode = new MySqlStringTypeMapping("tinytext", _options, StoreTypePostfix.None);
+            _textUnicode = new MySqlStringTypeMapping("text", _options, StoreTypePostfix.None);
+            _mediumtextUnicode = new MySqlStringTypeMapping("mediumtext", _options, StoreTypePostfix.None);
+            _longtextUnicode = new MySqlStringTypeMapping("longtext", _options, StoreTypePostfix.None);
 
-            _nchar = new MySqlStringTypeMapping("nchar", _options, fixedLength: true);
-            _nvarchar = new MySqlStringTypeMapping("nvarchar", _options);
+            _nchar = new MySqlStringTypeMapping("nchar", _options, StoreTypePostfix.Size, fixedLength: true);
+            _nvarchar = new MySqlStringTypeMapping("nvarchar", _options, StoreTypePostfix.Size);
 
-            _enum = new MySqlStringTypeMapping("enum", _options);
+            _enum = new MySqlStringTypeMapping("enum", _options, StoreTypePostfix.None);
 
             _guid = MySqlGuidTypeMapping.IsValidGuidFormat(_options.ConnectionSettings.GuidFormat)
                 ? new MySqlGuidTypeMapping(_options.ConnectionSettings.GuidFormat)
@@ -286,20 +273,6 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
         ///     directly from your code. This API may change or be removed in future releases.
         /// </summary>
-        protected override void ValidateMapping(CoreTypeMapping mapping, IProperty property)
-        {
-            var relationalMapping = mapping as RelationalTypeMapping;
-
-            if (_disallowedMappings.Contains(relationalMapping?.StoreType))
-            {
-                throw new ArgumentException($@"Missing length for data type ""{relationalMapping?.StoreType}"".");
-            }
-        }
-
-        /// <summary>
-        ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
-        ///     directly from your code. This API may change or be removed in future releases.
-        /// </summary>
         protected override RelationalTypeMapping FindMapping(in RelationalTypeMappingInfo mappingInfo) =>
             // first, try any plugins, allowing them to override built-in mappings
             base.FindMapping(mappingInfo) ??
@@ -386,59 +359,38 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
 
                 if (clrType == typeof(string))
                 {
-                    var isNationalCharSet = storeTypeNameBase != null &&
-                                            (storeTypeNameBase.Equals(_nchar.StoreTypeNameBase, StringComparison.OrdinalIgnoreCase) ||
-                                             storeTypeNameBase.Equals(_nvarchar.StoreTypeNameBase, StringComparison.OrdinalIgnoreCase));
                     var isFixedLength = mappingInfo.IsFixedLength == true;
-                    var charset = isNationalCharSet
-                        ? _options.NationalCharSet
-                        : _options.CharSet;
-                    var isUnicode = mappingInfo.IsUnicode ?? charset.IsUnicode;
-                    var bytesPerChar = charset.MaxBytesPerChar;
-                    var charSetSuffix = string.Empty;
 
-                    // Obsolete: Remove for .NET 5 release.
-                    if (isUnicode &&
-                        (mappingInfo.IsKeyOrIndex &&
-                         (_options.CharSetBehavior & CharSetBehavior.AppendToUnicodeIndexAndKeyColumns) != 0 ||
-                         !mappingInfo.IsKeyOrIndex &&
-                         (_options.CharSetBehavior & CharSetBehavior.AppendToUnicodeNonIndexAndKeyColumns) != 0) ||
-                        !isUnicode &&
-                        (mappingInfo.IsKeyOrIndex &&
-                         (_options.CharSetBehavior & CharSetBehavior.AppendToAnsiIndexAndKeyColumns) != 0 ||
-                         !mappingInfo.IsKeyOrIndex &&
-                         (_options.CharSetBehavior & CharSetBehavior.AppendToAnsiNonIndexAndKeyColumns) != 0))
-                    {
-                        charSetSuffix = $" CHARACTER SET {(isNationalCharSet ? _options.NationalCharSet : _options.CharSet).Name}";
-                    }
-
-                    var maxSize = 8000 / bytesPerChar;
-
-                    // Obsolete: Remove this for .NET 5 release, because of `HasPrefixLength()` support.
+                    // Because we cannot check the annotations of the property mapping, we can't know whether `HasPrefixLength()` has been
+                    // used or not. Therefore by default, the `LimitKeyedOrIndexedStringColumnLength` option will be true, and we will
+                    // ensure, that the length of string properties will be set to a reasonable length, so that two columns limited this
+                    // way could still fit.
+                    // If users disable the `LimitKeyedOrIndexedStringColumnLength` option, they are responsible for oppropriately calling
+                    // `HasPrefixLength()` for string properties, that are not mapped to a store type, where needed.
                     var size = mappingInfo.Size ??
-                               (mappingInfo.IsKeyOrIndex
+                               (mappingInfo.IsKeyOrIndex &&
+                                _options.LimitKeyedOrIndexedStringColumnLength
                                    // Allow to use at most half of the max key length, so at least 2 columns can fit
-                                   ? Math.Min(_options.ServerVersion.MaxKeyLength / (bytesPerChar * 2), 255)
+                                   ? Math.Min(_options.ServerVersion.MaxKeyLength / (_options.DefaultCharSet.MaxBytesPerChar * 2), 255)
                                    : (int?)null);
 
-                    if (size > maxSize)
+                    // If a string column size is bigger than it can/might be, we automatically adjust it to a variable one with an
+                    // unlimited size.
+                    if (size > 65_553 / _options.DefaultCharSet.MaxBytesPerChar)
                     {
                         size = null;
+                        isFixedLength = false;
                     }
 
-                    return new MySqlStringTypeMapping(
-                        size == null
-                            ? "longtext" + charSetSuffix
-                            : (isNationalCharSet
-                                  ? "n"
-                                  : string.Empty) +
-                              (isFixedLength
-                                  ? "char("
-                                  : "varchar(") + size + ")" + charSetSuffix,
-                        _options,
-                        isUnicode,
-                        size,
-                        isFixedLength);
+                    mapping = isFixedLength
+                        ? _charUnicode
+                        : size == null
+                            ? _longtextUnicode
+                            : _varcharUnicode;
+
+                    return size == null
+                        ? mapping
+                        : mapping.Clone($"{mapping.StoreTypeNameBase}({size})", size);
                 }
 
                 if (clrType == typeof(byte[]))

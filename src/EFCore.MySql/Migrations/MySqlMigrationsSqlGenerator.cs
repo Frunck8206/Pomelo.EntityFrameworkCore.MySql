@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
@@ -15,9 +16,11 @@ using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Utilities;
+using Microsoft.Extensions.Logging;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Internal;
 using Pomelo.EntityFrameworkCore.MySql.Metadata.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Storage.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Migrations
 {
@@ -331,7 +334,35 @@ DELIMITER ;";
         {
             base.Generate(operation, model, builder, false);
 
-            GenerateComment(operation.Comment, builder);
+            var tableOptions = new List<(string, string)>();
+
+            if (operation[MySqlAnnotationNames.CharSet] is string charSet)
+            {
+                tableOptions.Add(("CHARACTER SET", charSet));
+            }
+
+            if (operation[RelationalAnnotationNames.Collation] is string collation)
+            {
+                tableOptions.Add(("COLLATE", collation));
+            }
+
+            if (operation.Comment != null)
+            {
+                tableOptions.Add(("COMMENT", _stringTypeMapping.GenerateSqlLiteral(operation.Comment)));
+            }
+
+            tableOptions.AddRange(
+                MySqlEntityTypeExtensions.DeserializeTableOptions(operation[MySqlAnnotationNames.StoreOptions] as string)
+                    .Select(kvp => (kvp.Key, kvp.Value)));
+
+            foreach (var (key, value) in tableOptions)
+            {
+                builder
+                    .Append(" ")
+                    .Append(key)
+                    .Append("=")
+                    .Append(value);
+            }
 
             if (terminate)
             {
@@ -342,7 +373,60 @@ DELIMITER ;";
 
         protected override void Generate(AlterTableOperation operation, IModel model, MigrationCommandListBuilder builder)
         {
-            var madeChanges = false;
+            var oldCharSet = operation.OldTable[MySqlAnnotationNames.CharSet] as string;
+            var newCharSet = operation[MySqlAnnotationNames.CharSet] as string;
+
+            var oldCollation = operation.OldTable[RelationalAnnotationNames.Collation] as string;
+            var newCollation = operation[RelationalAnnotationNames.Collation] as string;
+
+            // Collations are more specific than charsets. So if a collation has been set, we use the collation instead of the charset.
+            if (newCollation != oldCollation &&
+                newCollation != null)
+            {
+                // A new collation has been set. It takes precedence over any defined charset.
+                builder
+                    .Append("ALTER TABLE ")
+                    .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name, operation.Schema))
+                    .Append(" COLLATE=")
+                    .Append(newCollation)
+                    .AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
+
+                EndStatement(builder);
+            }
+            else if (newCharSet != oldCharSet ||
+                     newCollation != oldCollation && newCollation == null)
+            {
+                // The charset has been changed or the collation has been reset to the default.
+                if (newCharSet != null)
+                {
+                    // A new charset has been set without an explicit collation.
+                    builder
+                        .Append("ALTER TABLE ")
+                        .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name, operation.Schema))
+                        .Append(" CHARACTER SET=")
+                        .Append(newCharSet)
+                        .AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
+
+                    EndStatement(builder);
+                }
+                else
+                {
+                    // The charset (and any collation) has been reset to the default.
+                    var resetCharSetSql = $@"set @__pomelo_TableCharset = (
+    SELECT `ccsa`.`CHARACTER_SET_NAME` as `TABLE_CHARACTER_SET`
+    FROM `INFORMATION_SCHEMA`.`TABLES` as `t`
+    LEFT JOIN `INFORMATION_SCHEMA`.`COLLATION_CHARACTER_SET_APPLICABILITY` as `ccsa` ON `ccsa`.`COLLATION_NAME` = `t`.`TABLE_COLLATION`
+    WHERE `TABLE_SCHEMA` = SCHEMA() AND `TABLE_NAME` = {_stringTypeMapping.GenerateSqlLiteral(operation.Name)} AND `TABLE_TYPE` IN ('BASE TABLE', 'VIEW'));
+
+SET @__pomelo_SqlExpr = CONCAT('ALTER TABLE {Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name)} CHARACTER SET = ', @__pomelo_TableCharset, ';');
+PREPARE __pomelo_SqlExprExecute FROM @__pomelo_SqlExpr;
+EXECUTE __pomelo_SqlExprExecute;
+DEALLOCATE PREPARE __pomelo_SqlExprExecute;";
+
+                    builder.AppendLine(resetCharSetSql);
+                    EndStatement(builder);
+                }
+            }
 
             if (operation.Comment != operation.OldTable.Comment)
             {
@@ -353,11 +437,29 @@ DELIMITER ;";
                 GenerateComment(operation.Comment ?? string.Empty, builder);
 
                 builder.AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
-                madeChanges = true;
+                EndStatement(builder);
             }
 
-            if (madeChanges)
+            var oldTableOptions = MySqlEntityTypeExtensions.DeserializeTableOptions(operation.OldTable[MySqlAnnotationNames.StoreOptions] as string);
+            var newTableOptions = MySqlEntityTypeExtensions.DeserializeTableOptions(operation[MySqlAnnotationNames.StoreOptions] as string);
+            var addedOrChangedTableOptions = newTableOptions.Except(oldTableOptions).ToArray();
+
+            if (addedOrChangedTableOptions.Length > 0)
             {
+                builder
+                    .Append("ALTER TABLE ")
+                    .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name, operation.Schema));
+
+                foreach (var (key, value) in addedOrChangedTableOptions)
+                {
+                    builder
+                        .Append(" ")
+                        .Append(key)
+                        .Append("=")
+                        .Append(value);
+                }
+
+                builder.AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
                 EndStatement(builder);
             }
         }
@@ -453,7 +555,7 @@ DELIMITER ;";
                         IsUnique = index.IsUnique,
                         Filter = index.Filter,
                     };
-                    createIndexOperation.AddAnnotations(_annotationProvider.For(index));
+                    createIndexOperation.AddAnnotations(_annotationProvider.For(index, true)); // CHECK: necessary?
                     createIndexOperation.AddAnnotations(operation.GetAnnotations());
 
                     Generate(createIndexOperation, model, builder);
@@ -531,6 +633,14 @@ DELIMITER ;";
         {
             Check.NotNull(operation, nameof(operation));
             Check.NotNull(builder, nameof(builder));
+
+            if (!_options.ServerVersion.Supports.SpatialIndexes &&
+                operation[MySqlAnnotationNames.SpatialIndex] is true)
+            {
+                Dependencies.MigrationsLogger.Logger.LogWarning(
+                    $"Spatial indexes are not supported on {_options.ServerVersion}. The CREATE INDEX operation will be ignored.");
+                return;
+            }
 
             builder.Append("CREATE ");
 
@@ -635,6 +745,20 @@ DELIMITER ;";
                 .Append("CREATE DATABASE ")
                 .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name));
 
+            if (operation.CharSet != null)
+            {
+                builder
+                    .Append(" CHARACTER SET ")
+                    .Append(operation.CharSet);
+            }
+
+            if (operation.Collation != null)
+            {
+                builder
+                    .Append(" COLLATE ")
+                    .Append(operation.Collation);
+            }
+
             builder
                 .AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator)
                 .EndCommand();
@@ -661,6 +785,54 @@ DELIMITER ;";
                 .Append(Dependencies.SqlGenerationHelper.StatementTerminator)
                 .AppendLine(Dependencies.SqlGenerationHelper.BatchTerminator);
             EndStatement(builder);
+        }
+
+        protected override void Generate(AlterDatabaseOperation operation, IModel model, MigrationCommandListBuilder builder)
+        {
+            Check.NotNull(operation, nameof(operation));
+            Check.NotNull(builder, nameof(builder));
+
+            // Also at this point, all explicitly added `Relational:Collation` annotations (through delegation) should have been set to the
+            // `Collation` property and removed.
+            Debug.Assert(operation.FindAnnotation(RelationalAnnotationNames.Collation) == null);
+
+            var oldCharSet = operation.OldDatabase[MySqlAnnotationNames.CharSet] as string;
+            var newCharSet = operation[MySqlAnnotationNames.CharSet] as string;
+
+            var oldCollation = operation.OldDatabase.Collation;
+            var newCollation = operation.Collation;
+
+            // Collations are more specific than charsets. So if a collation has been set, we use the collation instead of the charset.
+            if (newCollation != oldCollation &&
+                newCollation != null)
+            {
+                // A new collation has been set. It takes precedence over any defined charset.
+                builder
+                    .Append("ALTER DATABASE COLLATE ")
+                    .Append(newCollation)
+                    .AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
+
+                EndStatement(builder);
+            }
+            else if (newCharSet != oldCharSet ||
+                     newCollation != oldCollation && newCollation == null)
+            {
+                // The charset has been changed or the collation has been reset to the default.
+                if (newCharSet != null)
+                {
+                    // A new charset has been set without an explicit collation.
+                    builder
+                        .Append("ALTER DATABASE CHARACTER SET ")
+                        .Append(newCharSet)
+                        .AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
+
+                    EndStatement(builder);
+                }
+                else
+                {
+                    Dependencies.MigrationsLogger.Logger.LogWarning(@"ALTER DATABASE operations can currently not implicitly reset the character set AND the collation to the server default values. Please explicitly specify a character set, a collation or both.");
+                }
+            }
         }
 
         protected override void Generate(
@@ -746,7 +918,7 @@ DELIMITER ;";
             }
         }
 
-        protected void TemporarilyDropForeignKeys(
+        protected virtual void TemporarilyDropForeignKeys(
             IModel model,
             MigrationCommandListBuilder builder,
             string schemaName,
@@ -1023,7 +1195,7 @@ DELIMITER ;";
             Check.NotNull(operation, nameof(operation));
             Check.NotNull(builder, nameof(builder));
 
-            var matchType = operation.ColumnType ?? GetColumnType(schema, table, name, operation, model);
+            var matchType = GetColumnType(schema, table, name, operation, model);
             var matchLen = "";
             var match = _typeRegex.Match(matchType ?? "-");
             if (match.Success)
@@ -1114,7 +1286,7 @@ DELIMITER ;";
                 builder
                     .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(name))
                     .Append(" ")
-                    .Append(operation.ColumnType ?? GetColumnType(schema, table, name, operation, model));
+                    .Append(GetColumnType(schema, table, name, operation, model));
                 builder
                     .Append(" AS ")
                     .Append($"({operation.ComputedColumnSql})");
@@ -1138,10 +1310,8 @@ DELIMITER ;";
             if (comment == null)
                 return;
 
-            var stringTypeMapping = Dependencies.TypeMappingSource.GetMapping(typeof(string));
-
             builder.Append(" COMMENT ")
-                .Append(stringTypeMapping.GenerateSqlLiteral(comment));
+                .Append(_stringTypeMapping.GenerateSqlLiteral(comment));
         }
 
         private void ColumnDefinitionWithCharSet(string schema, string table, string name, ColumnOperation operation, IModel model, MigrationCommandListBuilder builder)
@@ -1152,9 +1322,7 @@ DELIMITER ;";
                 return;
             }
 
-            var columnType = operation.ColumnType != null
-                ? GetColumnTypeWithCharSetAndCollation(operation, operation.ColumnType)
-                : GetColumnType(schema, table, name, operation, model);
+            var columnType = GetColumnType(schema, table, name, operation, model);
 
             builder
                 .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(name))
@@ -1184,14 +1352,19 @@ DELIMITER ;";
         protected override string GetColumnType(string schema, string table, string name, ColumnOperation operation, IModel model)
             => GetColumnTypeWithCharSetAndCollation(
                 operation,
-                base.GetColumnType(schema, table, name, operation, model));
+                operation.ColumnType ?? base.GetColumnType(schema, table, name, operation, model));
 
         private static string GetColumnTypeWithCharSetAndCollation(ColumnOperation operation, string columnType)
         {
+            if (columnType.IndexOf("json", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return columnType;
+            }
+
             var charSet = operation[MySqlAnnotationNames.CharSet];
             if (charSet != null)
             {
-                const string characterSetClausePattern = @"CHARACTER SET \w+";
+                const string characterSetClausePattern = @"(CHARACTER SET|CHARSET)\s+\w+";
                 var characterSetClause = $@"CHARACTER SET {charSet}";
 
                 columnType = Regex.IsMatch(columnType, characterSetClausePattern, RegexOptions.IgnoreCase)
@@ -1199,7 +1372,18 @@ DELIMITER ;";
                     : columnType.TrimEnd() + " " + characterSetClause;
             }
 
-            var collation = operation[MySqlAnnotationNames.Collation];
+            // At this point, all legacy `MySql:Collation` annotations should have been replaced by `Relational:Collation` ones.
+#pragma warning disable 618
+            Debug.Assert(operation.FindAnnotation(MySqlAnnotationNames.Collation) == null);
+#pragma warning restore 618
+
+            // Also at this point, all explicitly added `Relational:Collation` annotations (through delegation) should have been set to the
+            // `Collation` property and removed.
+            Debug.Assert(operation.FindAnnotation(RelationalAnnotationNames.Collation) == null);
+
+            // If we set the collation through delegation, we use the `Relational:Collation` annotation, so the collation will not be in the
+            // `Collation` property.
+            var collation = operation.Collation;
             if (collation != null)
             {
                 const string collationClausePattern = @"COLLATE \w+";
@@ -1226,6 +1410,12 @@ DELIMITER ;";
             else if (defaultValue != null)
             {
                 var typeMapping = Dependencies.TypeMappingSource.GetMappingForValue(defaultValue);
+
+                if (typeMapping is IDefaultValueCompatibilityAware defaultValueCompatibilityAware)
+                {
+                    typeMapping = defaultValueCompatibilityAware.Clone(true);
+                }
+
                 builder
                     .Append(" DEFAULT ")
                     .Append(typeMapping.GenerateSqlLiteral(defaultValue));
@@ -1472,7 +1662,22 @@ DELIMITER ;";
         protected override void IndexOptions(CreateIndexOperation operation, IModel model, MigrationCommandListBuilder builder)
         {
             // The base implementation supports index filters in form of a WHERE clause.
-            // This is not supported by MySQL.
+            // This is not supported by MySQL, so we don't call it here.
+
+            var fullText = operation[MySqlAnnotationNames.FullTextIndex] as bool?;
+            if (fullText == true)
+            {
+                var fullTextParser = operation[MySqlAnnotationNames.FullTextParser] as string;
+                if (!string.IsNullOrEmpty(fullTextParser))
+                {
+                    // Official MySQL support exists since 5.1, but since MariaDB does not support full-text parsers and does not recognize
+                    // the "/*!xxxxx" syntax for versions below 50700, we use 50700 here, even though the statement would work in lower
+                    // versions as well. Since we don't support MySQL 5.6 officially anymore, this is fine.
+                    builder.Append(" /*!50700 WITH PARSER ")
+                        .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(fullTextParser))
+                        .Append(" */");
+                }
+            }
         }
 
         /// <summary>
